@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数据监控大屏</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/charts.css">
+    <script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
+</head>
+
+<body class="monitor-page">
+
+<header class="monitor-header">
+    <div>
+        <div class="monitor-kicker">SMART DRAINAGE COMMAND</div>
+        <h1>排水系统实时监控大屏</h1>
+        <p>趋势监测、风险预警、策略评估一体化看板</p>
+    </div>
+    <div class="monitor-actions">
+        <button id="refreshBtn" class="monitor-btn">立即刷新</button>
+        <button class="monitor-btn ghost" onclick="location.href='/'">返回</button>
+    </div>
+</header>
+
+<section class="kpi-grid">
+    <div class="kpi-card">
+        <div class="kpi-label">当前降雨</div>
+        <div class="kpi-value" id="kpiRain">0.00 mm/h</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">平均水位</div>
+        <div class="kpi-value" id="kpiWater">0.00 m</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">峰值水位</div>
+        <div class="kpi-value" id="kpiPeak">0.00 m</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">总能耗</div>
+        <div class="kpi-value" id="kpiEnergy">0.00 kWh</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">估算溢流</div>
+        <div class="kpi-value" id="kpiOverflow">0.00 m³</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">系统评分</div>
+        <div class="kpi-value" id="kpiScore">100</div>
+    </div>
+</section>
+
+<section class="dashboard-grid">
+    <div class="panel-big span-2">
+        <div class="panel-title">降雨强度趋势（区域图）</div>
+        <div id="rain" class="chart-big"></div>
+    </div>
+
+    <div class="panel-big span-2">
+        <div class="panel-title">节点水位与安全阈值</div>
+        <div id="water" class="chart-big"></div>
+    </div>
+
+    <div class="panel-big">
+        <div class="panel-title">能耗负荷（柱状+均线）</div>
+        <div id="energy" class="chart-big"></div>
+    </div>
+
+    <div class="panel-big">
+        <div class="panel-title">规则 vs RL 策略对比</div>
+        <div id="compare" class="chart-big"></div>
+    </div>
+
+    <div class="panel-big">
+        <div class="panel-title">综合风险仪表</div>
+        <div id="riskGauge" class="chart-big"></div>
+    </div>
+
+    <div class="panel-big">
+        <div class="panel-title">节点水位热力分布</div>
+        <div id="heatmap" class="chart-big"></div>
+    </div>
+
+    <div class="panel-big">
+        <div class="panel-title">泵站开关占比（规则估算）</div>
+        <div id="pumpMix" class="chart-big"></div>
+    </div>
+
+    <div class="panel-big">
+        <div class="panel-title">系统健康雷达</div>
+        <div id="radar" class="chart-big"></div>
+    </div>
+
+    <div class="panel-big span-2">
+        <div class="panel-title">运行事件流</div>
+        <div id="eventFeed" class="event-feed"></div>
+    </div>
+</section>
+
+<footer class="monitor-footer">
+    <span>数据每 3 秒刷新一次</span>
+    <span id="updateTime">最近更新：--</span>
+</footer>
+
+<script src="/static/js/charts.js"></script>
+
+</body>
+</html>

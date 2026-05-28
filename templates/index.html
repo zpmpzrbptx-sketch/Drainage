@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>排水系统调度总览</title>
+
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/home.css">
+</head>
+
+<body class="home-page">
+
+<!-- ===== 顶部 ===== -->
+<header class="home-header">
+    <div>
+        <div class="home-kicker">CITY DRAINAGE OPS</div>
+        <h1>排水系统智能调度平台</h1>
+        <p>融合策略评估、风险监测与动态仿真的统一入口</p>
+    </div>
+    <div class="header-side">
+        <div id="time" class="home-time"></div>
+        <div class="home-badges">
+            <span class="badge">在线监测</span>
+            <span class="badge" id="modeBadge">模式: RULE</span>
+            <span class="badge" id="stepBadge">Step 0</span>
+        </div>
+    </div>
+</header>
+
+<!-- ===== 指标 ===== -->
+<section class="stats">
+
+    <div class="stat">
+        <div class="label">当前降雨</div>
+        <div id="rainVal" class="number">0.00</div>
+        <div class="unit">mm/h</div>
+    </div>
+
+    <div class="stat">
+        <div class="label">平均水位</div>
+        <div id="waterVal" class="number">0.00</div>
+        <div class="unit">m</div>
+    </div>
+
+    <div class="stat">
+        <div class="label">总能耗</div>
+        <div id="energyVal" class="number">0.00</div>
+        <div class="unit">kWh</div>
+    </div>
+
+    <div class="stat">
+        <div class="label">风险等级</div>
+        <div id="riskVal" class="number low">低</div>
+        <div class="unit" id="riskScoreVal">0 / 100</div>
+    </div>
+
+    <div class="stat">
+        <div class="label">系统评分</div>
+        <div id="systemScoreVal" class="number">100</div>
+        <div class="unit">score</div>
+    </div>
+
+    <div class="stat">
+        <div class="label">平均奖励</div>
+        <div id="avgRewardVal" class="number">0.00</div>
+        <div class="unit">reward</div>
+    </div>
+
+</section>
+
+<section class="home-grid">
+    <div class="panel card-2">
+        <div class="panel-title">系统快照</div>
+        <div class="snapshot-main" id="snapshotText">等待数据更新...</div>
+        <div class="snapshot-sub" id="snapshotHint">监控服务已连接，正在获取仿真状态。</div>
+        <div class="risk-chip" id="riskChip">风险等级: 低</div>
+    </div>
+
+    <div class="panel card-2">
+        <div class="panel-title">调度建议</div>
+        <div class="insight-list">
+            <div class="insight-item"><span>当前策略</span><strong id="insightMode">-</strong></div>
+            <div class="insight-item"><span>风险指数</span><strong id="insightRisk">-</strong></div>
+            <div class="insight-item"><span>建议动作</span><strong id="insightAction">-</strong></div>
+            <div class="insight-item"><span>系统解释</span><strong id="insightExplain">-</strong></div>
+        </div>
+    </div>
+
+    <div class="panel card-2">
+        <div class="panel-title">节点与蓄水压力</div>
+        <div class="node-list">
+            <div class="node-row">
+                <span>节点1</span>
+                <div class="node-meter"><i id="nodeWater1Bar"></i></div>
+                <strong id="nodeWater1Val">0.00m</strong>
+                <em id="nodeStorage1Val">蓄水 0.00</em>
+            </div>
+            <div class="node-row">
+                <span>节点2</span>
+                <div class="node-meter"><i id="nodeWater2Bar"></i></div>
+                <strong id="nodeWater2Val">0.00m</strong>
+                <em id="nodeStorage2Val">蓄水 0.00</em>
+            </div>
+            <div class="node-row">
+                <span>节点3</span>
+                <div class="node-meter"><i id="nodeWater3Bar"></i></div>
+                <strong id="nodeWater3Val">0.00m</strong>
+                <em id="nodeStorage3Val">蓄水 0.00</em>
+            </div>
+        </div>
+    </div>
+
+    <div class="panel card-2">
+        <div class="panel-title">泵站运行状态</div>
+        <div class="pump-list">
+            <div class="pump-row">
+                <span>泵站1</span>
+                <b id="pumpState1" class="pump-state off">关闭</b>
+                <em id="pumpRatio1">开启占比 0%</em>
+            </div>
+            <div class="pump-row">
+                <span>泵站2</span>
+                <b id="pumpState2" class="pump-state off">关闭</b>
+                <em id="pumpRatio2">开启占比 0%</em>
+            </div>
+            <div class="pump-row">
+                <span>泵站3</span>
+                <b id="pumpState3" class="pump-state off">关闭</b>
+                <em id="pumpRatio3">开启占比 0%</em>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 功能入口 ===== -->
+<section class="nav">
+
+    <button onclick="location.href='/charts'">
+        数据监控大屏
+    </button>
+
+    <button onclick="location.href='/decision'">
+        调度决策解释
+    </button>
+
+    <button onclick="location.href='/simulation'">
+        进入动态仿真
+    </button>
+
+</section>
+
+<!-- ===== 底部说明（加分项） ===== -->
+<div class="footer">
+    本系统基于强化学习方法实现排水系统“厂-站-网”联合调度，
+    当前数据为模拟/环境生成数据，后续将接入SWMM模型。
+</div>
+
+<script src="/static/js/main.js"></script>
+
+</body>
+</html>

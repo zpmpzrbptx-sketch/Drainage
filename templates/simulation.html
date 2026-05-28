@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>厂-站-网动态仿真</title>
+    <link rel="stylesheet" href="/static/css/style.css" />
+    <link rel="stylesheet" href="/static/css/simulation.css" />
+    <script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
+  </head>
+  <body class="simulation-page">
+    <header class="sim-header">
+      <div class="sim-title-group">
+        <div class="sim-kicker">DRN-OPS DIGITAL TWIN</div>
+        <h1>厂-站-网联合调度动态仿真</h1>
+        <p>实时对比强化学习与规则策略下的排水系统响应</p>
+      </div>
+      <div class="header-actions">
+        <button id="initBtn" class="sim-btn primary">启动仿真</button>
+        <button id="toggleBtn" class="sim-btn">暂停</button>
+        <button id="resetBtn" class="sim-btn">重置</button>
+        <button class="sim-btn ghost" onclick="location.href='/'">返回首页</button>
+      </div>
+    </header>
+
+    <main class="sim-main">
+      <section class="simulation-shell">
+        <div class="scene-card">
+          <div class="scene-caption">调度模式</div>
+        <div class="mode-bar">
+          <button class="mode-btn active" data-mode="rl">强化学习</button>
+          <button class="mode-btn" data-mode="rule">规则调度</button>
+          <button class="mode-btn" data-mode="manual">手动模式</button>
+        </div>
+
+        <div class="scene-top">
+          <div class="rain">
+            <span class="chip-label">当前降雨</span>
+            <span class="chip-value"><span id="rain">0</span> mm/h</span>
+          </div>
+          <div class="step-badge">Step <span id="stepNo">0</span></div>
+        </div>
+
+        <div class="pump-status-grid">
+          <div class="pump-status-card" id="pumpCard1">
+            <div class="pump-name">泵站1</div>
+            <div class="pump-state off" id="pumpState1">关闭</div>
+          </div>
+          <div class="pump-status-card" id="pumpCard2">
+            <div class="pump-name">泵站2</div>
+            <div class="pump-state off" id="pumpState2">关闭</div>
+          </div>
+          <div class="pump-status-card" id="pumpCard3">
+            <div class="pump-name">泵站3</div>
+            <div class="pump-state off" id="pumpState3">关闭</div>
+          </div>
+        </div>
+
+        <div class="manual-panel" id="manualPanel">
+          <div class="manual-title">手动控制面板</div>
+          <div class="manual-actions">
+            <button class="manual-btn" data-pump="0">泵站1</button>
+            <button class="manual-btn" data-pump="1">泵站2</button>
+            <button class="manual-btn" data-pump="2">泵站3</button>
+            <button class="manual-btn ghost" id="manualAllOn">全部开启</button>
+            <button class="manual-btn ghost" id="manualAllOff">全部关闭</button>
+          </div>
+        </div>
+
+        <div class="water-grid">
+          <div class="water-box">
+            <div class="water-label">蓄水池1</div>
+            <div class="water" id="storage1"></div>
+          </div>
+          <div class="water-box">
+            <div class="water-label">蓄水池2</div>
+            <div class="water" id="storage2"></div>
+          </div>
+          <div class="water-box">
+            <div class="water-label">蓄水池3</div>
+            <div class="water" id="storage3"></div>
+          </div>
+        </div>
+
+        <div class="pipe-wrap">
+          <div class="pipe">
+            <div class="flow-dot"></div>
+          </div>
+          <div id="pump" class="pump">⚙</div>
+          <div class="node node1">站</div>
+          <div class="node node2">网</div>
+          <div class="node node3">厂</div>
+        </div>
+        </div>
+
+        <aside class="info-card">
+          <div class="title">实时状态</div>
+          <div class="status-list">
+            <div class="status-item"><span>策略</span><strong id="strategy"></strong></div>
+            <div class="status-item"><span>动作</span><strong id="action"></strong></div>
+            <div class="status-item"><span>风险</span><strong id="risk" class="risk-pill">-</strong></div>
+            <div class="status-item"><span>水位</span><strong><span id="node1"></span> / <span id="node2"></span> / <span id="node3"></span></strong></div>
+            <div class="status-item"><span>蓄水</span><strong><span id="storageText1"></span> / <span id="storageText2"></span> / <span id="storageText3"></span></strong></div>
+            <div class="status-item"><span>流量</span><strong id="flow"></strong></div>
+            <div class="status-item"><span>能耗</span><strong id="energy"></strong></div>
+            <div class="status-item"><span>溢流</span><strong id="overflow"></strong></div>
+            <div class="status-item"><span>奖励</span><strong id="reward"></strong></div>
+          </div>
+          <div class="explain-box" id="explain"></div>
+          <div class="overflow-alert" id="alert">⚠ 检测到溢流，请及时调整策略</div>
+        </aside>
+      </section>
+
+      <section class="chart-grid">
+        <div class="panel-big">
+          <div class="panel-title">状态与奖励轨迹</div>
+          <div id="timeline" class="chart-big"></div>
+        </div>
+        <div class="panel-big">
+          <div class="panel-title">规则 vs 强化学习</div>
+          <div id="compare" class="chart-big"></div>
+        </div>
+      </section>
+
+      <div class="replay-bar">
+        <div class="replay-title">回放</div>
+        <input id="replay" type="range" min="0" max="0" value="0" />
+        <span id="replayLabel">0 / 0</span>
+      </div>
+    </main>
+
+    <script src="/static/js/simulation.js"></script>
+  </body>
+</html>

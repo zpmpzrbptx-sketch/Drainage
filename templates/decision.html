@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>调度决策解释</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+
+<body>
+
+<div class="header">
+    <div>调度决策解释模块</div>
+    <button onclick="location.href='/'">返回首页</button>
+</div>
+
+<div class="decision-container">
+
+    <div class="card">
+        <div class="title">当前系统状态</div>
+        <p>水位：<span id="water"></span></p>
+        <p>降雨：<span id="rain"></span></p>
+    </div>
+
+    <div class="card">
+        <div class="title">调度决策</div>
+        <p id="action"></p>
+        <p>决策时间：<span id="decisionTime"></span></p>
+        <p>策略版本：<span id="strategyVersion"></span></p>
+        <p>决策ID：<span id="decisionId"></span></p>
+        <p>解释签名：<span id="explainSignature"></span></p>
+        <p>复核窗口：<span id="reviewWindow"></span></p>
+    </div>
+
+    <div class="card">
+        <div class="title">决策依据</div>
+        <p id="reason" class="decision-reason"></p>
+        <div id="ruleHits" class="rule-list"></div>
+    </div>
+
+    <div class="card">
+        <div class="title">置信度与不确定性</div>
+        <p>置信度：<span id="confidenceScore"></span></p>
+        <p>等级：<span id="confidenceLevel"></span></p>
+        <div id="uncertaintyList" class="uncertainty-list"></div>
+    </div>
+
+    <div class="card">
+        <div class="title">阈值敏感性分析</div>
+        <div id="sensitivityList" class="sensitivity-list"></div>
+    </div>
+
+    <div class="card">
+        <div class="title">反事实推演</div>
+        <div id="counterfactualList" class="counterfactual-list"></div>
+    </div>
+
+</div>
+
+<script src="/static/js/decision.js"></script>
+
+</body>
+</html>

@@ -1,0 +1,231 @@
+:root {
+  --m-bg-1: #061627;
+  --m-bg-2: #0c2d45;
+  --m-panel: rgba(12, 28, 47, 0.82);
+  --m-border: rgba(122, 197, 255, 0.2);
+  --m-text: #def0ff;
+  --m-muted: #8fb0c9;
+  --m-accent: #25d6ff;
+  --m-safe: #18b97d;
+  --m-warn: #f6a623;
+  --m-danger: #ef5350;
+}
+
+.monitor-page {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--m-text);
+  font-family: "Avenir Next", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  background:
+    radial-gradient(900px 560px at 10% -15%, rgba(37, 214, 255, 0.3), transparent 70%),
+    radial-gradient(780px 520px at 92% -12%, rgba(55, 142, 255, 0.25), transparent 68%),
+    linear-gradient(140deg, var(--m-bg-1), var(--m-bg-2));
+}
+
+.monitor-header,
+.kpi-grid,
+.dashboard-grid,
+.monitor-footer {
+  max-width: 1420px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.monitor-header {
+  padding: 24px 24px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.monitor-kicker {
+  font-size: 12px;
+  letter-spacing: 1.4px;
+  color: #8fe7ff;
+  text-transform: uppercase;
+}
+
+.monitor-header h1 {
+  margin: 8px 0 0;
+  font-size: 34px;
+  letter-spacing: 0.4px;
+}
+
+.monitor-header p {
+  margin: 8px 0 0;
+  color: var(--m-muted);
+  font-size: 14px;
+}
+
+.monitor-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.monitor-btn {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  padding: 8px 14px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8f5ff;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.monitor-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.monitor-btn.ghost {
+  background: transparent;
+}
+
+.kpi-grid {
+  padding: 0 24px 14px;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.kpi-card {
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 12px;
+  backdrop-filter: blur(3px);
+}
+
+.kpi-label {
+  font-size: 12px;
+  color: #b9d2e7;
+}
+
+.kpi-value {
+  margin-top: 6px;
+  font-size: 24px;
+  color: #f4fbff;
+  font-weight: 700;
+}
+
+.dashboard-grid {
+  padding: 0 24px 20px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.dashboard-grid .panel-big {
+  border-radius: 16px;
+  background: var(--m-panel);
+  border: 1px solid var(--m-border);
+  box-shadow: 0 16px 30px rgba(0, 0, 0, 0.26);
+  padding: 12px;
+}
+
+.dashboard-grid .panel-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #d7ecff;
+  margin-bottom: 8px;
+}
+
+.dashboard-grid .chart-big {
+  height: 270px;
+}
+
+.span-2 {
+  grid-column: span 2;
+}
+
+.event-feed {
+  height: 235px;
+  overflow: auto;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(6, 17, 29, 0.65);
+  padding: 8px 10px;
+}
+
+.event-item {
+  display: grid;
+  grid-template-columns: 68px 1fr;
+  gap: 8px;
+  font-size: 12px;
+  padding: 8px 4px;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.12);
+}
+
+.event-item:last-child {
+  border-bottom: none;
+}
+
+.event-time {
+  color: #90b6d2;
+}
+
+.event-text {
+  color: #e0f2ff;
+  line-height: 1.45;
+}
+
+.event-item.safe .event-text {
+  color: #93ffd6;
+}
+
+.event-item.warn .event-text {
+  color: #ffd38a;
+}
+
+.event-item.danger .event-text {
+  color: #ffaba8;
+}
+
+.monitor-footer {
+  padding: 0 24px 24px;
+  display: flex;
+  justify-content: space-between;
+  color: var(--m-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 1280px) {
+  .kpi-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .dashboard-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .span-2 {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 760px) {
+  .monitor-header,
+  .kpi-grid,
+  .dashboard-grid,
+  .monitor-footer {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .monitor-header {
+    flex-direction: column;
+  }
+
+  .kpi-grid,
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .span-2 {
+    grid-column: auto;
+  }
+
+  .monitor-header h1 {
+    font-size: 26px;
+  }
+}
