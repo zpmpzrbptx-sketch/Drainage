@@ -226,10 +226,10 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
             ]
         )
         if rain_col is None:
-            raise ValueError(
-                "CSV无法识别降雨列。请至少包含 'rain' 或 'system|rainfall'。"
-            )
-        rain = _to_arr(rain_col)
+            # 兼容极简训练 CSV：允许无雨量列，默认按 0 降雨处理
+            rain = np.zeros(len(df), dtype=np.float32)
+        else:
+            rain = _to_arr(rain_col)
 
         node_depth_cols = [c for c in names if c.startswith("node|") and c.endswith("|depth")]
         node_volume_cols = [c for c in names if c.startswith("node|") and c.endswith("|volume")]
@@ -259,7 +259,12 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
 
         water = _stack_k(top_depth_cols, 3)
         flow = _stack_k(top_flow_cols, 3)
-        storage = _stack_k(top_volume_cols, 3)
+        # 轻量 rl_core CSV 可能不包含 node|*|volume。
+        # 此时用 depth 近似构造 storage 代理特征，避免状态尾部全零。
+        if top_volume_cols:
+            storage = _stack_k(top_volume_cols, 3)
+        else:
+            storage = np.clip(water * 35.0, 0.0, 100.0).astype(np.float32)
 
         inflow_col = _first_existing(
             [

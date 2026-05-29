@@ -31,38 +31,45 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 # =========================
 SWMM_CSV_PATH = os.getenv("SWMM_CSV_PATH", "").strip()
 SWMM_CSV_PATHS = os.getenv("SWMM_CSV_PATHS", "").strip()
-TRAIN_MODE = os.getenv("TRAIN_MODE", "multi_s2").strip().lower()
+SWMM_DATA_DIR = os.getenv("SWMM_DATA_DIR", "").strip()
+TRAIN_MODE = os.getenv("TRAIN_MODE", "multi_all").strip().lower()
 # 单文件：
 # export SWMM_CSV_PATH=/path/to/swmm_export.csv
 # 多文件（推荐用于“多个csv同步训练”）：
 # export SWMM_CSV_PATHS=/path/a.csv,/path/b.csv
+# 数据目录（可选）：
+# export SWMM_DATA_DIR=data/processed_rl_core
+
+
+def _resolve_processed_dir() -> Path:
+    if SWMM_DATA_DIR:
+        custom = Path(SWMM_DATA_DIR)
+        if not custom.is_absolute():
+            custom = Path(ROOT_DIR) / custom
+        return custom
+
+    # 兼容新旧目录：优先 rl_core，再回退 processed
+    candidates = [
+        Path(ROOT_DIR) / "data" / "processed_rl_core",
+        Path(ROOT_DIR) / "data" / "processed",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return candidates[0]
 
 
 def resolve_swmm_csv_paths() -> list[str]:
-    processed_dir = Path(ROOT_DIR) / "data" / "processed"
+    processed_dir = _resolve_processed_dir()
 
-    # 实验开关：single_s2（单场景） vs multi_s2（多场景）
-    if TRAIN_MODE == "single_s2":
-        if SWMM_CSV_PATH:
-            return [SWMM_CSV_PATH]
-        if processed_dir.exists():
-            s2_paths = sorted(
-                [str(p) for p in processed_dir.glob("*.csv") if "s2" in p.stem.lower()]
-            )
-            if s2_paths:
-                return [s2_paths[0]]
-
-    if TRAIN_MODE == "multi_s2":
-        if SWMM_CSV_PATHS:
-            paths = [p.strip() for p in SWMM_CSV_PATHS.split(",") if p.strip()]
-            if paths:
-                return paths
-        if processed_dir.exists():
-            s2_paths = sorted(
-                [str(p) for p in processed_dir.glob("*.csv") if "s2" in p.stem.lower()]
-            )
-            if s2_paths:
-                return s2_paths
+    def _discover_csv(keyword: str | None = None) -> list[str]:
+        if not processed_dir.exists():
+            return []
+        files = sorted(processed_dir.glob("*.csv"))
+        if keyword is None:
+            return [str(p) for p in files]
+        key = keyword.lower()
+        return [str(p) for p in files if key in p.stem.lower()]
 
     # 优先使用显式列表变量
     if SWMM_CSV_PATHS:
@@ -74,19 +81,32 @@ def resolve_swmm_csv_paths() -> list[str]:
     if SWMM_CSV_PATH:
         return [SWMM_CSV_PATH]
 
-    # 自动发现：默认使用 data/processed 下所有包含 s2 的 csv
-    # 例如 arid_S2.csv / moderateRain_S2.csv
-    if processed_dir.exists():
-        s2_paths = sorted(
-            [str(p) for p in processed_dir.glob("*.csv") if "s2" in p.stem.lower()]
-        )
+    # 实验开关：single_s2 / multi_s2 / single_all / multi_all
+    if TRAIN_MODE == "single_s2":
+        s2_paths = _discover_csv("s2")
+        if s2_paths:
+            return [s2_paths[0]]
+
+    if TRAIN_MODE == "multi_s2":
+        s2_paths = _discover_csv("s2")
         if s2_paths:
             return s2_paths
+
+    if TRAIN_MODE in {"single_all", "single"}:
+        all_paths = _discover_csv()
+        if all_paths:
+            return [all_paths[0]]
+
+    # 默认与兜底：使用目录下全部 csv（适配当前 processed_rl_core）
+    all_paths = _discover_csv()
+    if all_paths:
+        return all_paths
 
     return []
 
 
 TRAIN_SWMM_CSVS = resolve_swmm_csv_paths()
+print(f"数据目录: {_resolve_processed_dir()}")
 if TRAIN_SWMM_CSVS:
     print(f"训练模式: {TRAIN_MODE}")
     print("训练使用 SWMM CSV:")
