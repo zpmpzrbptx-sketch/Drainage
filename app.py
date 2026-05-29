@@ -27,12 +27,24 @@ def _safe_float(x: Any) -> float:
     return float(np.asarray(x, dtype=np.float32).reshape(-1)[0])
 
 
-def _safe_action(action: Any) -> list[int]:
+def _safe_action(
+    action: Any,
+    action_dim: int = 3,
+    pump_mask: Any = None,
+) -> list[int]:
+    action_dim = int(max(1, action_dim))
     arr = np.asarray(action).reshape(-1)
     arr = np.clip(np.rint(arr), 0, 1).astype(np.int32)
-    if arr.size < 3:
-        arr = np.pad(arr, (0, 3 - arr.size), mode="constant")
-    return arr[:3].tolist()
+    if arr.size < action_dim:
+        arr = np.pad(arr, (0, action_dim - arr.size), mode="constant")
+    arr = arr[:action_dim]
+    if pump_mask is not None:
+        mask = np.asarray(pump_mask).reshape(-1)
+        if mask.size < action_dim:
+            mask = np.pad(mask, (0, action_dim - mask.size), mode="constant")
+        mask = np.clip(np.rint(mask[:action_dim]), 0, 1).astype(np.int32)
+        arr = arr * mask
+    return arr.tolist()
 
 
 def _risk_level(overflow: float, max_water: float) -> str:
@@ -43,25 +55,33 @@ def _risk_level(overflow: float, max_water: float) -> str:
     return "low"
 
 
-def _rule_action(obs: np.ndarray) -> list[int]:
+def _rule_action(
+    obs: np.ndarray,
+    action_dim: int = 3,
+    pump_mask: Any = None,
+) -> list[int]:
     rain = float(obs[0])
     w1, w2, w3 = [float(x) for x in obs[1:4]]
-    action = [0, 0, 0]
+    action = [0] * int(max(1, action_dim))
     if w1 > 6.0 or rain > 8.0:
         action[0] = 1
-    if w2 > 6.0 or rain > 8.0:
+    if action_dim >= 2 and (w2 > 6.0 or rain > 8.0):
         action[1] = 1
-    if w3 > 6.0 or rain > 8.0:
+    if action_dim >= 3 and (w3 > 6.0 or rain > 8.0):
         action[2] = 1
     if max(w1, w2, w3) > 7.5:
-        action = [1, 1, 1]
-    return action
+        action = [1] * int(max(1, action_dim))
+    return _safe_action(action, action_dim=action_dim, pump_mask=pump_mask)
 
 
-def _manual_or_zero(action: Any) -> list[int]:
+def _manual_or_zero(
+    action: Any,
+    action_dim: int = 3,
+    pump_mask: Any = None,
+) -> list[int]:
     if action is None:
-        return [0, 0, 0]
-    return _safe_action(action)
+        return _safe_action([0] * int(max(1, action_dim)), action_dim=action_dim, pump_mask=pump_mask)
+    return _safe_action(action, action_dim=action_dim, pump_mask=pump_mask)
 
 
 def _mean(values: list[float]) -> float:
@@ -165,18 +185,43 @@ class SimulationService:
     def get_session(self, session_id: str) -> SimSession | None:
         return self.sessions.get(session_id)
 
+    def _get_action_spec(self, session: SimSession) -> tuple[int, Any]:
+        env = session.env
+        if env is None:
+            return 3, np.ones(3, dtype=np.int32)
+        action_dim = int(getattr(env, "action_dim", 3))
+        pump_mask = getattr(env, "pump_mask", np.ones(action_dim, dtype=np.int32))
+        return action_dim, pump_mask
+
     def decide_action(self, session: SimSession, manual_action: Any = None) -> tuple[list[int], str]:
+        action_dim, pump_mask = self._get_action_spec(session)
         if session.obs is None:
-            return [0, 0, 0], "none"
+            return _safe_action([0] * action_dim, action_dim=action_dim, pump_mask=pump_mask), "none"
         if session.mode == "manual":
-            action = _manual_or_zero(manual_action)
+            action = _manual_or_zero(
+                manual_action,
+                action_dim=action_dim,
+                pump_mask=pump_mask,
+            )
             return action, "manual"
         if session.mode == "rl":
             if self.rl_model is not None:
                 model_action, _ = self.rl_model.predict(session.obs, deterministic=True)
-                return _safe_action(model_action), "rl"
-            return _rule_action(session.obs), "rule_fallback"
-        return _rule_action(session.obs), "rule"
+                return _safe_action(
+                    model_action,
+                    action_dim=action_dim,
+                    pump_mask=pump_mask,
+                ), "rl"
+            return _rule_action(
+                session.obs,
+                action_dim=action_dim,
+                pump_mask=pump_mask,
+            ), "rule_fallback"
+        return _rule_action(
+            session.obs,
+            action_dim=action_dim,
+            pump_mask=pump_mask,
+        ), "rule"
 
     def explain(self, snapshot: dict[str, Any]) -> str:
         overflow = float(snapshot["overflow"])
@@ -232,6 +277,17 @@ class SimulationService:
             "reward": float(reward),
             "action": action,
             "risk": _risk_level(overflow, max_water),
+            "active_pump_count": int(
+                info.get("active_pump_count", getattr(session.env, "active_pump_count", 3))
+            ),
+            "pump_mask": info.get(
+                "pump_mask",
+                np.asarray(
+                    getattr(session.env, "pump_mask", np.ones(3, dtype=np.int32))
+                )
+                .astype(np.int32)
+                .tolist(),
+            ),
         }
         snapshot["explain"] = self.explain(snapshot)
         session.history.append(snapshot)
@@ -240,6 +296,12 @@ class SimulationService:
     def reset(self, session: SimSession) -> dict[str, Any]:
         session.reset()
         assert session.obs is not None
+        action_dim, pump_mask = self._get_action_spec(session)
+        zero_action = _safe_action(
+            [0] * action_dim,
+            action_dim=action_dim,
+            pump_mask=pump_mask,
+        )
         water_levels = [float(x) for x in session.obs[1:4]]
         flow_levels = [float(x) for x in session.obs[4:7]]
         storage_levels = [float(x) for x in session.obs[7:10]]
@@ -257,9 +319,11 @@ class SimulationService:
             "overflow": overflow,
             "energy": 0.0,
             "reward": 0.0,
-            "action": [0, 0, 0],
+            "action": zero_action,
             "action_source": "reset",
             "risk": _risk_level(overflow, max_water),
+            "active_pump_count": int(getattr(session.env, "active_pump_count", action_dim)),
+            "pump_mask": np.asarray(pump_mask).astype(np.int32).tolist(),
             "explain": "系统已重置，等待下一步调度。",
         }
 
@@ -397,7 +461,12 @@ def get_data():
         [float(x["storage_levels"][1]) for x in history],
         [float(x["storage_levels"][2]) for x in history],
     ]
-    actions = [x.get("action", [0, 0, 0]) for x in history]
+    action_dim = (
+        int(getattr(monitor_session.env, "action_dim", 3))
+        if monitor_session.env is not None
+        else 3
+    )
+    actions = [x.get("action", [0] * action_dim) for x in history]
 
     flat_water = [v for row in water for v in row]
     avg_water_series = [float((water[0][i] + water[1][i] + water[2][i]) / 3.0) for i in range(len(history))]
@@ -412,10 +481,10 @@ def get_data():
     )
     system_score = float(np.clip(100.0 - risk_score * 0.6 - sum(energy) * 0.08, 0.0, 100.0))
 
-    on_counts = [0, 0, 0]
+    on_counts = [0] * action_dim
     for act in actions:
-        safe_act = _safe_action(act)
-        for i in range(3):
+        safe_act = _safe_action(act, action_dim=action_dim)
+        for i in range(action_dim):
             on_counts[i] += int(safe_act[i])
     total_steps = max(len(actions), 1)
     pump_on_ratio = [round(c / total_steps * 100.0, 2) for c in on_counts]

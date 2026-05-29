@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
@@ -76,10 +77,13 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
 
         self.state: Optional[np.ndarray] = None
         self.last_action = np.zeros(self.action_dim, dtype=np.float32)
+        # 与 CSV 中实际泵数量对齐：默认 3 泵全开，读取 SWMM CSV 后会自动更新
+        self.active_pump_count = 3
+        self.pump_mask = np.ones(self.action_dim, dtype=np.float32)
 
         # SWMM 数据容器
         self.data_source = "random"
-        self.swmm_series: Optional[Dict[str, np.ndarray]] = None
+        self.swmm_series: Optional[Dict[str, Any]] = None
         self.data_len = 0
         self.data_cursor = 0
         if swmm_csv_path:
@@ -105,10 +109,25 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
         if self.data_len < 2:
             raise ValueError("SWMM csv requires at least 2 rows.")
 
+        # 根据宽表中的泵流量列，自动推断“有效泵数量”（最多 3）
+        flow_cols = self.swmm_series.get("_flow_cols", [])
+        pump_flow_cols = [
+            c
+            for c in flow_cols
+            if isinstance(c, str) and re.match(r"^link\|P\d+\|flow$", c)
+        ]
+        inferred_pumps = min(len(pump_flow_cols), self.action_dim)
+        if inferred_pumps > 0:
+            self.active_pump_count = inferred_pumps
+        else:
+            self.active_pump_count = self.action_dim
+        self.pump_mask = np.zeros(self.action_dim, dtype=np.float32)
+        self.pump_mask[: self.active_pump_count] = 1.0
+
         self.data_source = "swmm_csv"
         self.data_cursor = 0
 
-    def _build_swmm_series(self, df: pd.DataFrame) -> Dict[str, np.ndarray]:
+    def _build_swmm_series(self, df: pd.DataFrame) -> Dict[str, Any]:
         names = list(df.columns)
 
         def _to_arr(name: str) -> np.ndarray:
@@ -140,6 +159,15 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
             while len(arrs) < k:
                 arrs.append(arrs[-1].copy())
             return np.stack(arrs[:k], axis=1).astype(np.float32)
+
+        def _pump_sort_key(col: str) -> tuple[int, str]:
+            # link|P12|flow -> 12；无法解析时放到末尾
+            parts = col.split("|")
+            if len(parts) >= 3:
+                m = re.fullmatch(r"P(\d+)", parts[1])
+                if m:
+                    return (int(m.group(1)), col)
+            return (10**9, col)
 
         compact_required = [
             "rain",
@@ -181,6 +209,11 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
                 "flow": flow.astype(np.float32),
                 "storage": storage.astype(np.float32),
                 "inflow": inflow,
+                "_rain_col": "rain",
+                "_water_cols": ["water_1", "water_2", "water_3"],
+                "_flow_cols": ["flow_1", "flow_2", "flow_3"],
+                "_storage_cols": ["storage_1", "storage_2", "storage_3"],
+                "_inflow_col": inflow_col,
             }
 
         # 宽表自动映射（适配 system|/node|/link|）
@@ -208,11 +241,10 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
         top_depth_cols = _pick_top_by_signal(node_depth_cols, 3)
         top_volume_cols = _pick_top_by_signal(node_volume_cols, 3)
 
-        pump_flow_cols = [c for c in link_flow_cols if c.startswith("link|P")]
-        pump_flow_cols = sorted(
-            pump_flow_cols,
-            key=lambda x: int(x.split("|")[1][1:]) if x.split("|")[1][1:].isdigit() else 10**9,
-        )
+        pump_flow_cols = [
+            c for c in link_flow_cols if re.match(r"^link\|P\d+\|flow$", c)
+        ]
+        pump_flow_cols = sorted(pump_flow_cols, key=_pump_sort_key)
         top_flow_cols = list(pump_flow_cols[:3])
         if len(top_flow_cols) < 3:
             for c in _pick_top_by_signal(link_flow_cols, 6):
@@ -250,6 +282,11 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
             "flow": flow.astype(np.float32),
             "storage": storage.astype(np.float32),
             "inflow": inflow,
+            "_rain_col": rain_col,
+            "_water_cols": top_depth_cols,
+            "_flow_cols": top_flow_cols,
+            "_storage_cols": top_volume_cols,
+            "_inflow_col": inflow_col,
         }
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
@@ -310,6 +347,8 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
         if action.size != self.action_dim:
             raise ValueError(f"Expected {self.action_dim} actions, got {action.shape}")
         action = np.clip(np.rint(action), 0, 1).astype(np.float32)
+        if self.data_source == "swmm_csv":
+            action = action * self.pump_mask
 
         prev_state = self.state.copy()
         rain, water_levels, flow, storage = self._transition(prev_state, action)
@@ -373,6 +412,8 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
 
         info = {
             "data_source": self.data_source,
+            "active_pump_count": int(self.active_pump_count),
+            "pump_mask": self.pump_mask.astype(np.float32).tolist(),
             "rain": float(rain),
             "overflow": overflow,
             "high_water_penalty": high_water,
