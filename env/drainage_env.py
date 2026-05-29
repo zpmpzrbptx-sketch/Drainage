@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional, cast
 
 import gymnasium as gym
 import numpy as np
+import pandas as pd
 from gymnasium import spaces
 
 
@@ -28,6 +29,9 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
         swmm_csv_path: Optional[str] = None,
         max_steps: int = 200,
         severe_overflow_threshold: float = 12.0,
+        random_start: bool = False,
+        high_water_threshold: float = 5.0,
+        medium_water_threshold: float = 3.0,
     ):
         super().__init__()
 
@@ -48,12 +52,22 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
 
         self.max_steps = int(max_steps)
         self.severe_overflow_threshold = float(severe_overflow_threshold)
+        self.random_start = bool(random_start)
+        self.high_water_threshold = float(high_water_threshold)
+        self.medium_water_threshold = float(medium_water_threshold)
         self.current_step = 0
 
-        # 奖励参数（历史保留字段，当前 reward 直接写在 step 中）
-        self.alpha = 8.0  # 溢流惩罚
-        self.beta = 0.3  # 能耗惩罚
-        self.gamma = 2.0  # 高水位惩罚
+        # 奖励参数：强调“风险下降”，并兼顾能耗和启停成本
+        self.overflow_weight = 12.0
+        self.high_water_weight = 3.5
+        self.medium_water_weight = 0.9
+        self.risk_reduction_weight = 2.2
+        self.energy_weight = 0.015
+        self.switch_weight = 0.02
+        self.idle_risk_penalty = 1.2
+        self.low_risk_idle_bonus = 0.0
+        self.rain_alert_threshold = 2.0
+        self.rain_idle_penalty_weight = 0.15
 
         # 泵能力越大，开泵后对应片区水位下降越明显
         self.pump_capacity = np.array([1.5, 2.0, 3.0], dtype=np.float32)
@@ -74,28 +88,60 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
     def load_swmm_csv(self, csv_path: str) -> None:
         """
         读取 SWMM 导出的 CSV 数据。
-        必需列：
-        - rain
-        - water_1, water_2, water_3
-        - flow_1, flow_2, flow_3
-        - storage_1, storage_2, storage_3
-        可选列：
-        - inflow（用于增强随机动力学）
+        支持两种格式：
+        1) 简化列：rain / water_1..3 / flow_1..3 / storage_1..3 / inflow(可选)
+        2) SWMM宽表：system|... / node|... / link|...（自动映射）
         """
         path = Path(csv_path)
         if not path.exists():
             raise FileNotFoundError(f"SWMM csv not found: {csv_path}")
 
-        raw = np.genfromtxt(path, delimiter=",", names=True, dtype=np.float32)
-        if raw.size == 0:
+        df = pd.read_csv(path)
+        if df.empty:
             raise ValueError(f"SWMM csv is empty: {csv_path}")
-        # 统一转成一维记录数组，兼容“只有1行数据”时的形状
-        data = np.atleast_1d(raw).view(np.recarray)
-        names = data.dtype.names
-        if names is None:
-            raise ValueError(f"SWMM csv has no named columns: {csv_path}")
 
-        required = [
+        self.swmm_series = self._build_swmm_series(df)
+        self.data_len = len(self.swmm_series["rain"])
+        if self.data_len < 2:
+            raise ValueError("SWMM csv requires at least 2 rows.")
+
+        self.data_source = "swmm_csv"
+        self.data_cursor = 0
+
+    def _build_swmm_series(self, df: pd.DataFrame) -> Dict[str, np.ndarray]:
+        names = list(df.columns)
+
+        def _to_arr(name: str) -> np.ndarray:
+            s = pd.to_numeric(df[name], errors="coerce").fillna(0.0)
+            return s.to_numpy(dtype=np.float32).reshape(-1)
+
+        def _first_existing(candidates: list[str]) -> Optional[str]:
+            for c in candidates:
+                if c in df.columns:
+                    return c
+            return None
+
+        def _pick_top_by_signal(candidates: list[str], k: int) -> list[str]:
+            if not candidates:
+                return []
+            scored = []
+            for c in candidates:
+                s = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+                # 优先选择“有变化且量级较大”的时序，避免选到全零列
+                score = float(s.std()) + 0.1 * float(s.abs().mean())
+                scored.append((score, c))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return [c for _, c in scored[:k]]
+
+        def _stack_k(selected: list[str], k: int) -> np.ndarray:
+            if not selected:
+                return np.zeros((len(df), k), dtype=np.float32)
+            arrs = [_to_arr(c) for c in selected]
+            while len(arrs) < k:
+                arrs.append(arrs[-1].copy())
+            return np.stack(arrs[:k], axis=1).astype(np.float32)
+
+        compact_required = [
             "rain",
             "water_1",
             "water_2",
@@ -107,37 +153,104 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
             "storage_2",
             "storage_3",
         ]
-        missing = [c for c in required if c not in names]
-        if missing:
-            raise ValueError(
-                f"SWMM csv missing columns: {missing}. "
-                f"Required columns are: {required}"
+        has_compact = all(c in df.columns for c in compact_required)
+
+        if has_compact:
+            rain = _to_arr("rain")
+            water = np.stack(
+                [_to_arr("water_1"), _to_arr("water_2"), _to_arr("water_3")], axis=1
             )
+            flow = np.stack(
+                [_to_arr("flow_1"), _to_arr("flow_2"), _to_arr("flow_3")], axis=1
+            )
+            storage = np.stack(
+                [_to_arr("storage_1"), _to_arr("storage_2"), _to_arr("storage_3")],
+                axis=1,
+            )
+            inflow_col = _first_existing(
+                ["inflow", "system|lateral_inflow", "system|direct_inflow"]
+            )
+            inflow = (
+                _to_arr(inflow_col)
+                if inflow_col is not None
+                else np.zeros(len(rain), dtype=np.float32)
+            )
+            return {
+                "rain": rain,
+                "water": water.astype(np.float32),
+                "flow": flow.astype(np.float32),
+                "storage": storage.astype(np.float32),
+                "inflow": inflow,
+            }
 
-        def col(name: str) -> np.ndarray:
-            return np.asarray(cast(Any, data)[name], dtype=np.float32).reshape(-1)
+        # 宽表自动映射（适配 system|/node|/link|）
+        rain_col = _first_existing(
+            [
+                "system|rainfall",
+                "rain",
+                "subcatchment|S2|rainfall",
+                "subcatchment|S1|rainfall",
+            ]
+        )
+        if rain_col is None:
+            raise ValueError(
+                "CSV无法识别降雨列。请至少包含 'rain' 或 'system|rainfall'。"
+            )
+        rain = _to_arr(rain_col)
 
-        # 转为模型更方便使用的结构：
-        # rain:(T,), water/flow/storage:(T,3), inflow:(T,)
-        self.swmm_series = {
-            "rain": col("rain"),
-            "water": np.stack([col("water_1"), col("water_2"), col("water_3")], axis=1),
-            "flow": np.stack([col("flow_1"), col("flow_2"), col("flow_3")], axis=1),
-            "storage": np.stack(
-                [col("storage_1"), col("storage_2"), col("storage_3")], axis=1
-            ),
-            "inflow": (
-                col("inflow")
-                if "inflow" in names
-                else np.zeros(len(col("rain")), dtype=np.float32)
-            ),
+        node_depth_cols = [c for c in names if c.startswith("node|") and c.endswith("|depth")]
+        node_volume_cols = [c for c in names if c.startswith("node|") and c.endswith("|volume")]
+        link_flow_cols = [c for c in names if c.startswith("link|") and c.endswith("|flow")]
+
+        if not node_depth_cols:
+            raise ValueError("CSV无法识别节点水位列（期望包含 'node|*|depth'）。")
+
+        top_depth_cols = _pick_top_by_signal(node_depth_cols, 3)
+        top_volume_cols = _pick_top_by_signal(node_volume_cols, 3)
+
+        pump_flow_cols = [c for c in link_flow_cols if c.startswith("link|P")]
+        pump_flow_cols = sorted(
+            pump_flow_cols,
+            key=lambda x: int(x.split("|")[1][1:]) if x.split("|")[1][1:].isdigit() else 10**9,
+        )
+        top_flow_cols = list(pump_flow_cols[:3])
+        if len(top_flow_cols) < 3:
+            for c in _pick_top_by_signal(link_flow_cols, 6):
+                if c not in top_flow_cols:
+                    top_flow_cols.append(c)
+                if len(top_flow_cols) >= 3:
+                    break
+        if len(top_flow_cols) < 3:
+            outflow_col = _first_existing(["system|outflow"])
+            if outflow_col is not None:
+                top_flow_cols.append(outflow_col)
+
+        water = _stack_k(top_depth_cols, 3)
+        flow = _stack_k(top_flow_cols, 3)
+        storage = _stack_k(top_volume_cols, 3)
+
+        inflow_col = _first_existing(
+            [
+                "system|lateral_inflow",
+                "system|direct_inflow",
+                "system|dry_weather_inflow",
+                "system|groundwater_inflow",
+                "inflow",
+            ]
+        )
+        inflow = (
+            _to_arr(inflow_col)
+            if inflow_col is not None
+            else np.zeros(len(rain), dtype=np.float32)
+        )
+
+        return {
+            "rain": rain,
+            "water": water.astype(np.float32),
+            "flow": flow.astype(np.float32),
+            "storage": storage.astype(np.float32),
+            "inflow": inflow,
         }
-        self.data_len = len(self.swmm_series["rain"])
-        if self.data_len < 2:
-            raise ValueError("SWMM csv requires at least 2 rows.")
-
-        self.data_source = "swmm_csv"
-        self.data_cursor = 0
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         super().reset(seed=seed)
@@ -149,7 +262,12 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
 
         if self.data_source == "swmm_csv" and self.swmm_series is not None:
             # 支持从任意时间索引启动（便于离线数据训练/评估）
-            start_idx = int(options.get("start_idx", 0))
+            if "start_idx" in options:
+                start_idx = int(options.get("start_idx", 0))
+            elif self.random_start:
+                start_idx = int(self.np_random.integers(0, self.data_len - 1))
+            else:
+                start_idx = 0
             start_idx = int(np.clip(start_idx, 0, self.data_len - 2))
             self.data_cursor = start_idx
 
@@ -202,49 +320,38 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
         obs_box = cast(spaces.Box, self.observation_space)
         next_state = np.clip(next_state, obs_box.low, obs_box.high).astype(np.float32)
 
-        # 关键指标：
-        # overflow: 超过 8.0 的总超高量（越大越危险）
-        overflow = float(np.sum(np.maximum(water_levels - 8.0, 0.0)))
-        high_water = float(np.sum(water_levels > 6.0))
+        # 风险指标（overflow/high/medium）+ 成本指标（energy/switch）
+        prev_overflow, prev_high, prev_medium, prev_risk = self._risk_metrics(
+            prev_state[1:4]
+        )
+        overflow, high_water, medium_water, current_risk = self._risk_metrics(
+            water_levels
+        )
         energy = float(np.sum(action * self.pump_energy))
-        low_water_penalty = float(np.sum(water_levels < 1.0))
         switch_penalty = float(np.sum(np.abs(action - self.last_action)))
 
-        prev_water = float(np.mean(prev_state[1:4]))
-        new_water = float(np.mean(water_levels))
-        target_water = 3.5
-
-        # 奖励设计目标：维持安全水位，而不是“总是关泵”或“总是开泵”。
-        # 下面的项本质上是“安全性 + 经济性 + 平稳性”的加权和。
+        # 奖励设计：
+        # 1) 当前风险越高，惩罚越大
+        # 2) 相比上一时刻风险下降则给正向激励（引导“有效开泵”）
+        # 3) 能耗与频繁启停惩罚
+        # 4) 在有风险或强降雨前兆时，不作为会被额外惩罚
         reward = 0.0
+        reward -= current_risk
+        reward += (prev_risk - current_risk) * self.risk_reduction_weight
+        reward -= energy * self.energy_weight
+        reward -= switch_penalty * self.switch_weight
 
-        # 溢流惩罚（核心）
-        reward -= overflow * 4.0
-
-        # 高水位惩罚
-        reward -= high_water * 1.5
-
-        # 能耗惩罚（轻）
-        reward -= energy * 0.1
-
-        # 频繁切换惩罚
-        reward -= switch_penalty * 0.1
-
-        # 低水位惩罚
-        reward -= low_water_penalty * 1.0
-
-        # 偏离目标水位
-        reward -= abs(new_water - target_water) * 1.2
-
-        # 水位下降奖励
-        reward += (prev_water - new_water) * 6.0
-
-        # 安全运行奖励
-        if overflow == 0.0 and 2.0 <= new_water <= 5.0:
-            reward += 5.0
-
-        if overflow == 0.0 and 2.0 <= new_water <= 5.0:
-            reward += 2.0
+        pump_count = float(np.sum(action))
+        max_water = float(np.max(water_levels))
+        if pump_count == 0.0:
+            if max_water > self.high_water_threshold:
+                reward -= self.idle_risk_penalty
+            if rain > self.rain_alert_threshold:
+                reward -= (
+                    rain - self.rain_alert_threshold
+                ) * self.rain_idle_penalty_weight
+            if max_water < self.medium_water_threshold:
+                reward += self.low_risk_idle_bonus
 
         terminated = False
         truncated = False
@@ -268,8 +375,14 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
             "data_source": self.data_source,
             "rain": float(rain),
             "overflow": overflow,
+            "high_water_penalty": high_water,
+            "medium_water_penalty": medium_water,
+            "risk": current_risk,
+            "risk_reduction": float(prev_risk - current_risk),
+            "prev_overflow": prev_overflow,
+            "prev_high_water_penalty": prev_high,
+            "prev_medium_water_penalty": prev_medium,
             "energy": energy,
-            "high_water": high_water,
             "switch_penalty": switch_penalty,
             "reward": reward,
         }
@@ -278,6 +391,21 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
             info["data_len"] = self.data_len
 
         return next_state.copy(), reward, terminated, truncated, info
+
+    def _risk_metrics(self, water_levels: np.ndarray):
+        overflow = float(np.sum(np.maximum(water_levels - 8.0, 0.0)))
+        high_water = float(
+            np.sum(np.maximum(water_levels - self.high_water_threshold, 0.0))
+        )
+        medium_water = float(
+            np.sum(np.maximum(water_levels - self.medium_water_threshold, 0.0))
+        )
+        risk = (
+            overflow * self.overflow_weight
+            + high_water * self.high_water_weight
+            + medium_water * self.medium_water_weight
+        )
+        return overflow, high_water, medium_water, risk
 
     def _transition(self, prev_state: np.ndarray, action: np.ndarray):
         # 统一入口：按数据源选择状态转移逻辑
@@ -338,7 +466,7 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
         # 使用 SWMM 结果作为基准轨迹，叠加动作扰动：
         # target_* 负责“真实趋势”，action 负责“调度影响”。
         water_levels = (
-            target_water + 0.20 * prev_state[1:4] - 0.80 * pump_effect + 0.05 * inflow
+            target_water + 0.20 * prev_state[1:4] - 2.00 * pump_effect + 0.05 * inflow
         )
         water_levels = np.clip(water_levels, 0.0, 12.0).astype(np.float32)
 

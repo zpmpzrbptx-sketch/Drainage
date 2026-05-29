@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import gymnasium as gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
@@ -29,14 +30,132 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 # 2. 创建环境
 # =========================
 SWMM_CSV_PATH = os.getenv("SWMM_CSV_PATH", "").strip()
-# 可通过环境变量切换到真实 SWMM 数据：
+SWMM_CSV_PATHS = os.getenv("SWMM_CSV_PATHS", "").strip()
+TRAIN_MODE = os.getenv("TRAIN_MODE", "multi_s2").strip().lower()
+# 单文件：
 # export SWMM_CSV_PATH=/path/to/swmm_export.csv
+# 多文件（推荐用于“多个csv同步训练”）：
+# export SWMM_CSV_PATHS=/path/a.csv,/path/b.csv
+
+
+def resolve_swmm_csv_paths() -> list[str]:
+    processed_dir = Path(ROOT_DIR) / "data" / "processed"
+
+    # 实验开关：single_s2（单场景） vs multi_s2（多场景）
+    if TRAIN_MODE == "single_s2":
+        if SWMM_CSV_PATH:
+            return [SWMM_CSV_PATH]
+        if processed_dir.exists():
+            s2_paths = sorted(
+                [str(p) for p in processed_dir.glob("*.csv") if "s2" in p.stem.lower()]
+            )
+            if s2_paths:
+                return [s2_paths[0]]
+
+    if TRAIN_MODE == "multi_s2":
+        if SWMM_CSV_PATHS:
+            paths = [p.strip() for p in SWMM_CSV_PATHS.split(",") if p.strip()]
+            if paths:
+                return paths
+        if processed_dir.exists():
+            s2_paths = sorted(
+                [str(p) for p in processed_dir.glob("*.csv") if "s2" in p.stem.lower()]
+            )
+            if s2_paths:
+                return s2_paths
+
+    # 优先使用显式列表变量
+    if SWMM_CSV_PATHS:
+        paths = [p.strip() for p in SWMM_CSV_PATHS.split(",") if p.strip()]
+        if paths:
+            return paths
+
+    # 兼容原有单文件变量
+    if SWMM_CSV_PATH:
+        return [SWMM_CSV_PATH]
+
+    # 自动发现：默认使用 data/processed 下所有包含 s2 的 csv
+    # 例如 arid_S2.csv / moderateRain_S2.csv
+    if processed_dir.exists():
+        s2_paths = sorted(
+            [str(p) for p in processed_dir.glob("*.csv") if "s2" in p.stem.lower()]
+        )
+        if s2_paths:
+            return s2_paths
+
+    return []
+
+
+TRAIN_SWMM_CSVS = resolve_swmm_csv_paths()
+if TRAIN_SWMM_CSVS:
+    print(f"训练模式: {TRAIN_MODE}")
+    print("训练使用 SWMM CSV:")
+    for p in TRAIN_SWMM_CSVS:
+        print(f"- {p}")
+else:
+    print("未检测到 SWMM CSV，回退到 random 模式训练。")
+
+
+def inspect_csv_signal(csv_path: str) -> dict:
+    # 复用环境中的 CSV 映射逻辑，兼容简化列和 SWMM 宽表列
+    env = DrainageEnv(swmm_csv_path=csv_path, random_start=False)
+    if env.swmm_series is None:
+        raise ValueError(f"{csv_path} parsed but swmm_series is empty")
+
+    rain = env.swmm_series["rain"].astype(float)
+    water_max = env.swmm_series["water"].astype(float).max(axis=1)
+    flow_abs_max = abs(env.swmm_series["flow"].astype(float)).max(axis=1)
+    storage_max = env.swmm_series["storage"].astype(float).max(axis=1)
+
+    return {
+        "path": csv_path,
+        "rows": int(len(rain)),
+        "rain_nonzero_ratio": float((rain > 1e-6).mean()),
+        "rain_max": float(rain.max()),
+        "water_peak": float(water_max.max()),
+        "water_std": float(water_max.std()),
+        "flow_abs_peak": float(flow_abs_max.max()),
+        "storage_peak": float(storage_max.max()),
+    }
+
+
+def is_weak_signal(stats: dict) -> bool:
+    return (
+        stats["rain_nonzero_ratio"] < 0.01
+        and stats["rain_max"] < 0.1
+        and stats["water_peak"] < 0.5
+        and stats["flow_abs_peak"] < 0.5
+        and stats["storage_peak"] < 0.5
+    )
+
+
+CSV_STATS = []
+if TRAIN_SWMM_CSVS:
+    print("训练数据体检:")
+    for p in TRAIN_SWMM_CSVS:
+        st = inspect_csv_signal(p)
+        CSV_STATS.append(st)
+        print(
+            f"- {Path(p).name}: rows={st['rows']}, rain_nonzero={st['rain_nonzero_ratio']:.3f}, "
+            f"rain_max={st['rain_max']:.3f}, water_peak={st['water_peak']:.3f}, "
+            f"flow_abs_peak={st['flow_abs_peak']:.3f}, storage_peak={st['storage_peak']:.3f}"
+        )
+
+WEAK_DATASET = bool(CSV_STATS) and all(is_weak_signal(s) for s in CSV_STATS)
+if WEAK_DATASET:
+    print("[警告] 当前 SWMM CSV 全部为弱信号（近零降雨/近零水位）。将混入 random 环境以避免策略假收敛。")
 
 
 def make_env(rank: int = 0):
     def _init():
         # 每个并行环境都创建独立实例，避免状态互相污染
-        env = DrainageEnv(swmm_csv_path=SWMM_CSV_PATH or None)
+        csv_path = None
+        use_random_env = WEAK_DATASET and (rank % 4 == 0)
+        if TRAIN_SWMM_CSVS and not use_random_env:
+            # 多环境轮询分配数据源，实现多 CSV 并行“同步训练”
+            csv_path = TRAIN_SWMM_CSVS[rank % len(TRAIN_SWMM_CSVS)]
+
+        env = DrainageEnv(swmm_csv_path=csv_path, random_start=True)
         # Monitor 会记录 episode reward/length，便于 SB3 日志统计
         env = Monitor(env)
         # 不同 rank 使用不同 seed，提升采样多样性
@@ -64,13 +183,13 @@ model = PPO(
     # - n_steps * N_ENVS = 4096，每轮 rollout 数据量更充足
     # - batch_size 调大，价值网络更新更平滑
     # - ent_coef 促进探索，避免过早塌缩到单一动作
-    learning_rate=1e-4,
+    learning_rate=2e-4,
     n_steps=512,
     batch_size=256,
     gamma=0.99,
     gae_lambda=0.95,
-    clip_range=0.15,
-    ent_coef=0.01,
+    clip_range=0.12,
+    ent_coef=0.06,
     vf_coef=0.7,
 )
 
@@ -103,17 +222,43 @@ print(f"模型已保存到: {model_path}")
 # =========================
 print("开始测试模型...")
 
-test_env = DrainageEnv(swmm_csv_path=SWMM_CSV_PATH or None)
+test_csv_path = TRAIN_SWMM_CSVS[0] if TRAIN_SWMM_CSVS else None
+test_env = DrainageEnv(swmm_csv_path=test_csv_path, random_start=True)
 obs, _ = test_env.reset()
+
+print("随机动作对照（20步）...")
+rand_env = DrainageEnv(swmm_csv_path=test_csv_path, random_start=True)
+rand_obs, _ = rand_env.reset()
+for step in range(20):
+    rand_action = rand_env.action_space.sample()
+    rand_obs, rand_reward, rand_done, rand_truncated, _ = rand_env.step(rand_action)
+    print(f"[Random] Step {step} | Action: {rand_action} | Reward: {rand_reward:.2f}")
+    if rand_done or rand_truncated:
+        rand_obs, _ = rand_env.reset()
 
 for step in range(50):
     # deterministic=True 表示评估阶段用“贪心动作”，不加探索噪声
     action, _states = model.predict(obs, deterministic=True)
-    obs, reward, done, _, _ = test_env.step(action)
+    obs, reward, done, truncated, info = test_env.step(action)
 
-    print(f"Step {step} | Action: {action} | Reward: {reward:.2f}")
+    max_water = float(max(obs[1:4]))
+    overflow = float(info.get("overflow", 0.0))
+    risk = float(info.get("risk", 0.0))
 
-    if done:
-        obs, _ = test_env.reset()
+    print(
+        f"Step {step} | Action: {action} | max_water: {max_water:.2f} "
+        f"| overflow: {overflow:.2f} | risk: {risk:.2f} | Reward: {reward:.2f}"
+    )
+
+    if done or truncated:
+        # 测试时随机采样起点，避免只落在平稳时段
+        reset_options = None
+        if test_env.data_source == "swmm_csv" and test_env.data_len > 2:
+            start_idx = int(test_env.np_random.integers(0, test_env.data_len - 1))
+            reset_options = {"start_idx": start_idx}
+        obs, _ = test_env.reset(options=reset_options)
+
+if test_env.data_source == "swmm_csv" and WEAK_DATASET:
+    print("[提示] 当前测试数据为弱信号片段（risk≈0），全关泵是合理策略，不代表模型退化。")
 
 print("测试完成")
