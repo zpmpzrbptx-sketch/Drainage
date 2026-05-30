@@ -1,0 +1,4 @@
+Flask>=3.0.0
+numpy>=1.26.0
+PyMySQL>=1.1.1
+Werkzeug>=3.0.0

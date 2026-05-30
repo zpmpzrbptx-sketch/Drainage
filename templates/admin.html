@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>后台管理中心</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/admin.css">
+    <script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
+</head>
+<body class="admin-page">
+<header class="admin-header">
+    <div>
+        <div class="admin-kicker">DRAINAGE ADMIN</div>
+        <h1>排水系统后台管理中心</h1>
+        <p>角色权限、数据增删改查、综合查询与可视化分析</p>
+    </div>
+    <div class="admin-header-actions">
+        <span id="whoami" class="whoami">未登录</span>
+        <button id="logoutBtn" class="admin-btn ghost">退出登录</button>
+        <button class="admin-btn ghost" onclick="location.href='/'">返回首页</button>
+    </div>
+</header>
+
+<main class="admin-main">
+    <section id="loginSection" class="panel">
+        <div class="panel-title">登录与初始化</div>
+        <div class="form-grid cols-3">
+            <label>用户名
+                <input id="loginUsername" type="text" placeholder="admin">
+            </label>
+            <label>密码
+                <input id="loginPassword" type="password" placeholder="请输入密码">
+            </label>
+            <div class="inline-actions">
+                <button id="loginBtn" class="admin-btn">登录</button>
+                <button id="initBtn" class="admin-btn secondary">初始化系统</button>
+            </div>
+        </div>
+        <div class="tip">首次部署可点“初始化系统”，默认创建管理员 `admin / admin123456`，上线请立即修改。</div>
+    </section>
+
+    <section id="dashboardSection" class="dashboard hidden">
+        <div class="panel">
+            <div class="panel-title">查询筛选</div>
+            <div class="form-grid cols-6">
+                <label>场景
+                    <input id="fScenario" type="text" placeholder="如 moderateRain">
+                </label>
+                <label>模式
+                    <select id="fMode">
+                        <option value="">全部</option>
+                        <option value="rule">rule</option>
+                        <option value="rl">rl</option>
+                        <option value="manual">manual</option>
+                    </select>
+                </label>
+                <label>风险等级
+                    <select id="fRiskLevel">
+                        <option value="">全部</option>
+                        <option value="low">low</option>
+                        <option value="medium">medium</option>
+                        <option value="high">high</option>
+                    </select>
+                </label>
+                <label>开始时间
+                    <input id="fStartTime" type="datetime-local">
+                </label>
+                <label>结束时间
+                    <input id="fEndTime" type="datetime-local">
+                </label>
+                <label>关键词(场景/备注)
+                    <input id="fKeyword" type="text" placeholder="关键字">
+                </label>
+                <label>最小降雨
+                    <input id="fMinRain" type="number" step="0.01" placeholder="0">
+                </label>
+                <label>最大降雨
+                    <input id="fMaxRain" type="number" step="0.01" placeholder="20">
+                </label>
+                <label>最小溢流
+                    <input id="fMinOverflow" type="number" step="0.01" placeholder="0">
+                </label>
+                <label>最大溢流
+                    <input id="fMaxOverflow" type="number" step="0.01" placeholder="10">
+                </label>
+                <label>最小水位(三节点最大值)
+                    <input id="fMinWater" type="number" step="0.01" placeholder="0">
+                </label>
+                <label>最大水位(三节点最大值)
+                    <input id="fMaxWater" type="number" step="0.01" placeholder="10">
+                </label>
+            </div>
+            <div class="inline-actions">
+                <button id="queryBtn" class="admin-btn">查询</button>
+                <button id="resetFilterBtn" class="admin-btn secondary">重置筛选</button>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-title">统计概览</div>
+            <div class="kpi-grid">
+                <div class="kpi-card"><span>总记录数</span><strong id="kpiTotal">0</strong></div>
+                <div class="kpi-card"><span>平均降雨</span><strong id="kpiRain">0.00</strong></div>
+                <div class="kpi-card"><span>平均水位</span><strong id="kpiWater">0.00</strong></div>
+                <div class="kpi-card"><span>峰值水位</span><strong id="kpiPeak">0.00</strong></div>
+                <div class="kpi-card"><span>总能耗</span><strong id="kpiEnergy">0.00</strong></div>
+                <div class="kpi-card"><span>总溢流</span><strong id="kpiOverflow">0.00</strong></div>
+            </div>
+            <div class="chart-grid">
+                <div class="chart-card"><div class="chart-title">时间序列</div><div id="summaryChart" class="chart"></div></div>
+                <div class="chart-card"><div class="chart-title">风险分布</div><div id="riskChart" class="chart"></div></div>
+                <div class="chart-card"><div class="chart-title">模式分布</div><div id="modeChart" class="chart"></div></div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-title">记录管理（CRUD）</div>
+            <div class="inline-actions">
+                <button id="newRecordBtn" class="admin-btn">新增记录</button>
+                <span id="recordCount" class="muted">共 0 条</span>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>时间</th>
+                        <th>场景</th>
+                        <th>模式</th>
+                        <th>降雨</th>
+                        <th>均水位</th>
+                        <th>能耗</th>
+                        <th>溢流</th>
+                        <th>风险</th>
+                        <th>备注</th>
+                        <th>操作</th>
+                    </tr>
+                    </thead>
+                    <tbody id="recordTableBody"></tbody>
+                </table>
+            </div>
+            <div class="pager">
+                <button id="prevPageBtn" class="admin-btn ghost">上一页</button>
+                <span id="pageInfo">1 / 1</span>
+                <button id="nextPageBtn" class="admin-btn ghost">下一页</button>
+            </div>
+        </div>
+
+        <section id="userSection" class="panel hidden">
+            <div class="panel-title">用户与角色管理（管理员）</div>
+            <div class="inline-actions">
+                <button id="newUserBtn" class="admin-btn">新增用户</button>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>用户名</th>
+                        <th>角色</th>
+                        <th>状态</th>
+                        <th>创建时间</th>
+                        <th>操作</th>
+                    </tr>
+                    </thead>
+                    <tbody id="userTableBody"></tbody>
+                </table>
+            </div>
+        </section>
+    </section>
+</main>
+
+<div id="recordModal" class="modal hidden">
+    <div class="modal-card">
+        <div class="modal-title" id="recordModalTitle">新增记录</div>
+        <div class="form-grid cols-3">
+            <input type="hidden" id="recordId">
+            <label>场景
+                <input id="mScenario" type="text" placeholder="default">
+            </label>
+            <label>时间
+                <input id="mRecordTime" type="datetime-local">
+            </label>
+            <label>模式
+                <input id="mMode" type="text" placeholder="rule">
+            </label>
+            <label>降雨
+                <input id="mRain" type="number" step="0.01" placeholder="0">
+            </label>
+            <label>溢流
+                <input id="mOverflow" type="number" step="0.01" placeholder="0">
+            </label>
+            <label>能耗
+                <input id="mEnergy" type="number" step="0.01" placeholder="0">
+            </label>
+            <label>奖励
+                <input id="mReward" type="number" step="0.01" placeholder="0">
+            </label>
+            <label>节点1水位
+                <input id="mW1" type="number" step="0.01" placeholder="0">
+            </label>
+            <label>节点2水位
+                <input id="mW2" type="number" step="0.01" placeholder="0">
+            </label>
+            <label>节点3水位
+                <input id="mW3" type="number" step="0.01" placeholder="0">
+            </label>
+            <label>节点1流量
+                <input id="mF1" type="number" step="0.01" placeholder="0">
+            </label>
+            <label>节点2流量
+                <input id="mF2" type="number" step="0.01" placeholder="0">
+            </label>
+            <label>节点3流量
+                <input id="mF3" type="number" step="0.01" placeholder="0">
+            </label>
+            <label>节点1蓄水
+                <input id="mS1" type="number" step="0.01" placeholder="0">
+            </label>
+            <label>节点2蓄水
+                <input id="mS2" type="number" step="0.01" placeholder="0">
+            </label>
+            <label>节点3蓄水
+                <input id="mS3" type="number" step="0.01" placeholder="0">
+            </label>
+            <label>风险等级
+                <select id="mRisk">
+                    <option value="">自动计算</option>
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                </select>
+            </label>
+            <label>备注
+                <input id="mRemark" type="text" placeholder="备注信息">
+            </label>
+        </div>
+        <div class="inline-actions">
+            <button id="saveRecordBtn" class="admin-btn">保存</button>
+            <button id="cancelRecordBtn" class="admin-btn ghost">取消</button>
+        </div>
+    </div>
+</div>
+
+<div id="userModal" class="modal hidden">
+    <div class="modal-card narrow">
+        <div class="modal-title" id="userModalTitle">新增用户</div>
+        <input type="hidden" id="userId">
+        <div class="form-grid cols-2">
+            <label>用户名
+                <input id="uName" type="text" placeholder="用户名">
+            </label>
+            <label>角色
+                <select id="uRole">
+                    <option value="user">user</option>
+                    <option value="admin">admin</option>
+                </select>
+            </label>
+            <label>密码（新增必填，编辑可留空）
+                <input id="uPassword" type="password" placeholder="至少6位">
+            </label>
+            <label>是否启用
+                <select id="uActive">
+                    <option value="1">启用</option>
+                    <option value="0">禁用</option>
+                </select>
+            </label>
+        </div>
+        <div class="inline-actions">
+            <button id="saveUserBtn" class="admin-btn">保存</button>
+            <button id="cancelUserBtn" class="admin-btn ghost">取消</button>
+        </div>
+    </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/static/js/admin.js"></script>
+</body>
+</html>
