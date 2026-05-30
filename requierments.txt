@@ -2,3 +2,12 @@ Flask>=3.0.0
 numpy>=1.26.0
 PyMySQL>=1.1.1
 Werkzeug>=3.0.0
+pandas>=2.2.0
+gymnasium>=0.29.0
+
+# Optional: RL training/inference
+stable-baselines3>=2.3.0
+torch>=2.2.0
+
+# Optional: parse SWMM .out files
+swmm-api>=0.4.60

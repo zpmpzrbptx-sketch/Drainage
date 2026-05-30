@@ -32,7 +32,7 @@ DECISION_STRATEGY_VERSION = "rule-v1.2.0"
 MYSQL_HOST = os.getenv("MYSQL_HOST", "127.0.0.1").strip()
 MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
 MYSQL_USER = os.getenv("MYSQL_USER", "root").strip()
-MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "").strip()
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "shn20040511").strip()
 MYSQL_DB = os.getenv("MYSQL_DB", "drainage").strip()
 MYSQL_CHARSET = os.getenv("MYSQL_CHARSET", "utf8mb4").strip()
 
