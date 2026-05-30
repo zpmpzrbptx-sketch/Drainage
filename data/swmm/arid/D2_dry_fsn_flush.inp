@@ -16,9 +16,9 @@ SKIP_STEADY_STATE    NO
 
 START_DATE           05/10/2026
 START_TIME           00:00:00
-REPORT_START_DATE    05/11/2026
+REPORT_START_DATE    05/10/2026
 REPORT_START_TIME    00:00:00
-END_DATE             05/12/2026
+END_DATE             05/11/2026
 END_TIME             00:00:00
 SWEEP_START          01/01
 SWEEP_END            12/31
@@ -29,14 +29,14 @@ DRY_STEP             01:00:00
 ROUTING_STEP         0:00:01 
 RULE_STEP            00:01:00
 
-INERTIAL_DAMPING     PARTIAL
+INERTIAL_DAMPING     FULL
 NORMAL_FLOW_LIMITED  BOTH
 FORCE_MAIN_EQUATION  D-W
 VARIABLE_STEP        0.75
-LENGTHENING_STEP     0
+LENGTHENING_STEP     5
 MIN_SURFAREA         1.167
-MAX_TRIALS           12
-HEAD_TOLERANCE       0.0015
+MAX_TRIALS           20
+HEAD_TOLERANCE       0.002
 SYS_FLOW_TOL         5
 LAT_FLOW_TOL         5
 MINIMUM_STEP         0.5
@@ -51,7 +51,7 @@ DRY_ONLY         NO
 [RAINGAGES]
 ;;Name           Format    Interval SCF      Source    
 ;;-------------- --------- ------ ------ ----------
-RG1              INTENSITY 0:05     1.0      TIMESERIES Rain_1Y
+RG1              INTENSITY 0:05     1.0      TIMESERIES  0
 
 [SUBCATCHMENTS]
 ;;Name           Rain Gage        Outlet           Area     %Imperv  Width    %Slope   CurbLen  SnowPack        
@@ -1590,8 +1590,8 @@ J03260010        25.53      FREE                        NO
 [PUMPS]
 ;;Name           From Node        To Node          Pump Curve       Status   Sartup Shutoff 
 ;;-------------- ---------------- ---------------- ---------------- ------ -------- --------
-P1               J03193130        J03190134        P1_DRY           ON       0.15     0.05    
-P2               J03260054        J03260059        P2_DRY           ON       0.3      0.1     
+P1               J03193130        J03190134        P1_DRY           ON     0.15     0.05    
+P2               J03260054        J03260059        P2_DRY           ON     0.3      0.1     
 
 [XSECTIONS]
 ;;Link           Shape        Geom1            Geom2      Geom3      Geom4      Barrels    Culvert   
@@ -2343,17 +2343,22 @@ P2               J03260054        J03260059        P2_DRY           ON       0.3
 [DWF]
 ;;Node           Constituent      Baseline   Patterns  
 ;;-------------- ---------------- ---------- ----------
-G03160066        FLOW             2.4       
-J03193093        FLOW             2.4       
-J03193130        FLOW             2.7       
-J03235081        FLOW             5.4       
-J03235088        FLOW             5.5       
-J03260047        FLOW             2.8       
-J03260075        FLOW             2.8       
-J03260174        FLOW             5         
-J03260431        FLOW             6         
-J03380175        FLOW             2.2       
+G03160066        FLOW             2.4        FSN_FLUSH
+J03193093        FLOW             2.4        FSN_FLUSH
+J03193130        FLOW             2.7        FSN_FLUSH
+J03235081        FLOW             5.4        FSN_FLUSH
+J03235088        FLOW             5.5        FSN_FLUSH
+J03260047        FLOW             2.8        FSN_FLUSH
+J03260075        FLOW             2.8        FSN_FLUSH
+J03260174        FLOW             5          FSN_FLUSH
+J03260431        FLOW             6          FSN_FLUSH
+J03380175        FLOW             2.2        FSN_FLUSH
 
+
+[PATTERNS]
+;;Name           Type       Multipliers
+FSN_FLUSH        HOURLY     0.960 0.950 0.940 0.940 0.960 0.990 1.030 1.050 1.050 1.030 1.010 1.000
+FSN_FLUSH                   0.990 0.980 0.980 0.990 1.010 1.030 1.050 1.050 1.030 1.010 0.990 0.980
 [CURVES]
 ;;Name           Type       X-Value    Y-Value   
 ;;-------------- ---------- ---------- ----------
@@ -2365,12 +2370,12 @@ P1_DRY                      0.6        6
 P1_DRY                      1          8         
 ;
 P2_DRY           Pump2      0          0         
-P2_DRY                      0.2        0         
-P2_DRY                      0.4        8         
-P2_DRY                      0.8        18        
-P2_DRY                      1.2        30        
-P2_DRY                      1.6        42        
-P2_DRY                      2          55        
+P2_DRY           0.2        0         
+P2_DRY           0.4        8.4       
+P2_DRY           0.8        18.9      
+P2_DRY           1.2        31.5      
+P2_DRY           1.6        44.1      
+P2_DRY           2          57.75     
 
 [TIMESERIES]
 ;;Name           Date       Time       Value     

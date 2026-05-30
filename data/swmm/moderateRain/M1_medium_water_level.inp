@@ -16,9 +16,9 @@ SKIP_STEADY_STATE    NO
 
 START_DATE           05/10/2026
 START_TIME           00:00:00
-REPORT_START_DATE    05/11/2026
+REPORT_START_DATE    05/10/2026
 REPORT_START_TIME    00:00:00
-END_DATE             05/12/2026
+END_DATE             05/11/2026
 END_TIME             00:00:00
 SWEEP_START          01/01
 SWEEP_END            12/31
@@ -51,7 +51,7 @@ DRY_ONLY         NO
 [RAINGAGES]
 ;;Name           Format    Interval SCF      Source    
 ;;-------------- --------- ------ ------ ----------
-RG1              INTENSITY 0:05     1.0      TIMESERIES Rain_1Y
+RG1              INTENSITY 0:05     1.0      TIMESERIES  Rain_1Y
 
 [SUBCATCHMENTS]
 ;;Name           Rain Gage        Outlet           Area     %Imperv  Width    %Slope   CurbLen  SnowPack        

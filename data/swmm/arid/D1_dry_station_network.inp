@@ -16,9 +16,9 @@ SKIP_STEADY_STATE    NO
 
 START_DATE           05/10/2026
 START_TIME           00:00:00
-REPORT_START_DATE    05/11/2026
+REPORT_START_DATE    05/10/2026
 REPORT_START_TIME    00:00:00
-END_DATE             05/12/2026
+END_DATE             05/11/2026
 END_TIME             00:00:00
 SWEEP_START          01/01
 SWEEP_END            12/31
@@ -29,14 +29,14 @@ DRY_STEP             01:00:00
 ROUTING_STEP         0:00:01 
 RULE_STEP            00:01:00
 
-INERTIAL_DAMPING     FULL
+INERTIAL_DAMPING     PARTIAL
 NORMAL_FLOW_LIMITED  BOTH
 FORCE_MAIN_EQUATION  D-W
 VARIABLE_STEP        0.75
-LENGTHENING_STEP     5
+LENGTHENING_STEP     0
 MIN_SURFAREA         1.167
-MAX_TRIALS           20
-HEAD_TOLERANCE       0.002
+MAX_TRIALS           12
+HEAD_TOLERANCE       0.0015
 SYS_FLOW_TOL         5
 LAT_FLOW_TOL         5
 MINIMUM_STEP         0.5
@@ -51,7 +51,7 @@ DRY_ONLY         NO
 [RAINGAGES]
 ;;Name           Format    Interval SCF      Source    
 ;;-------------- --------- ------ ------ ----------
-RG1              INTENSITY 0:05     1.0      TIMESERIES Rain_1Y
+RG1              INTENSITY 0:05     1.0      TIMESERIES  0
 
 [SUBCATCHMENTS]
 ;;Name           Rain Gage        Outlet           Area     %Imperv  Width    %Slope   CurbLen  SnowPack        
@@ -103,6 +103,7 @@ J03166623        31.6       2          0          0          100
 J03176807        31.949     2          0          0          100       
 J03176811        33.016     2.204      0          0          100       
 J03176902        30.088     2.122      0          0          100       
+J03180001        29.3       2          0          0          100       
 J03180002        29.91      2          0          0          100       
 J03180003        29.38      2          0          0          100       
 J03180004        29.73      2          0          0          100       
@@ -385,6 +386,8 @@ J03260031        30.03      2          0          0          100
 J03260032        29.17      2          0          0          100       
 J03260033        28.04      2          0          0          100       
 J03260034        30         2          0          0          100       
+J03260038        28.05      2          0          0          100       
+J03260041        27.83      2          0          0          100       
 J03260047        30.33      2          0          0          100       
 J03260048        27.7       2          0          0          100       
 J03260049        30.3       2          0          0          100       
@@ -503,6 +506,7 @@ J03261012        30         2          0          0          100
 J03261013        29.64      2          0          0          100       
 J03261014        28.04      2          0          0          100       
 J03261015        29.41      2          0          0          100       
+J03262001        27.57      2          0          0          100       
 J03262003        28.28      2          0          0          100       
 J03262004        27.85      2          0          0          100       
 J03262008        28.22      2          0          0          100       
@@ -553,7 +557,9 @@ J03263016        28.52      2          0          0          100
 J03263017        29.44      2          0          0          100       
 J03263018        29.71      2          0          0          100       
 J03263024        29.86      2          0          0          100       
+J03263039        28.63      2          0          0          100       
 J03263049        29.63      2          0          0          100       
+J03263052        28.58      2          0          0          100       
 J03263053        29.58      2          0          0          100       
 J03263054        29.7       2          0          0          100       
 J03263057        29.98      2          0          0          100       
@@ -828,17 +834,6 @@ J03411083        29.09      2          0          0          100
 J03464880        31.04      2          0          0          100       
 J06103061        29.18      2          0          0          100       
 J06103062        29.56      2          0          0          100       
-
-
-[STORAGE]
-;;Name           Elev.      MaxDepth   InitDepth  Shape      Curve Name/Params           Fevap
-;;-------------- ---------- ---------- ---------- ---------- --------------------------- ----------
-J03180001        29.3       102.000    0          TABULAR    MR_STORAGE                  0         
-J03260038        28.05      102.000    0          TABULAR    MR_STORAGE                  0         
-J03260041        27.83      102.000    0          TABULAR    MR_STORAGE                  0         
-J03262001        27.57      102.000    0          TABULAR    MR_STORAGE                  0         
-J03263039        28.63      102.000    0          TABULAR    MR_STORAGE                  0         
-J03263052        28.58      102.000    0          TABULAR    MR_STORAGE                  0         
 
 [OUTFALLS]
 ;;Name           Elevation  Type       Stage Data       Gated    Route To        
@@ -2377,10 +2372,6 @@ P2_DRY           1.2        31.5
 P2_DRY           1.6        44.1      
 P2_DRY           2          57.75     
 
-MR_STORAGE       Storage    0          120.000   
-MR_STORAGE       1          120.000   
-MR_STORAGE       2          120.000   
-MR_STORAGE       102        120.000   
 [TIMESERIES]
 ;;Name           Date       Time       Value     
 ;;-------------- ---------- ---------- ----------
