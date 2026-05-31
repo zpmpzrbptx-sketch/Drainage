@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>后台账号中心</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body class="admin-page admin-login-page">
+<div class="admin-aurora admin-aurora-a"></div>
+<div class="admin-aurora admin-aurora-b"></div>
+<header class="admin-header">
+    <div class="admin-head-main">
+        <div class="admin-kicker">DRAINAGE CONTROL HUB</div>
+        <h1>后台登录</h1>
+        <p>登录后进入排水系统后台，查看查询面板、图表分析与运维管理功能</p>
+        <div class="admin-head-chips">
+            <span class="head-chip">安全登录</span>
+            <span class="head-chip">初始化指引</span>
+            <span class="head-chip">系统管理</span>
+        </div>
+    </div>
+    <div class="admin-header-actions">
+        {% if allow_public_register %}
+        <button class="admin-btn secondary" onclick="location.href='/admin/register'">去注册</button>
+        {% endif %}
+        <button class="admin-btn ghost" onclick="location.href='/'">返回首页</button>
+    </div>
+</header>
+
+<main class="admin-main">
+    <section id="loginSection" class="panel panel-elevated auth-shell">
+        <aside class="auth-side">
+            <div class="auth-side-kicker">ACCESS GUIDE</div>
+            <h2>专注登录流程</h2>
+            <p>此页面仅用于账号登录。若你还没有账号，请前往独立注册页完成创建后再返回登录。</p>
+            <ul class="auth-checklist">
+                <li>用户名仅支持字母、数字、下划线</li>
+                <li>密码区分大小写，输入错误会提示登录失败</li>
+                <li>登录成功后自动跳转进入后台主页面</li>
+            </ul>
+            <div class="auth-init-note">
+                <strong>初始化提示</strong>
+                <span>首次部署可一键创建默认管理员 `admin / admin123456`，上线后请尽快修改默认密码。</span>
+            </div>
+        </aside>
+
+        <div class="auth-form-area">
+            <div class="panel-head auth-form-head">
+                <div class="panel-title">账号登录</div>
+                <div class="panel-subtitle">输入用户名与密码进入系统</div>
+            </div>
+            <div class="form-grid cols-2 auth-grid auth-grid-login">
+                <label>用户名
+                    <input id="loginUsername" type="text" placeholder="例如 admin_user">
+                </label>
+                <label>密码
+                    <input id="loginPassword" type="password" placeholder="请输入密码">
+                </label>
+            </div>
+            <input id="confirmPassword" type="password" class="hidden" tabindex="-1" autocomplete="off" aria-hidden="true">
+            <div class="auth-meta">
+                <div class="tip" id="passwordStrengthTip">密码强度：-</div>
+                {% if allow_public_register %}
+                <div class="tip">还没有账号？点击“去注册”进入独立注册页面。</div>
+                {% else %}
+                <div class="tip">当前环境关闭公开注册，请联系管理员创建账号。</div>
+                {% endif %}
+            </div>
+            <div class="inline-actions">
+                <button id="loginBtn" class="admin-btn">登录</button>
+                <button id="initBtn" class="admin-btn ghost">初始化系统</button>
+            </div>
+        </div>
+    </section>
+</main>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/static/js/admin.js"></script>
+</body>
+</html>

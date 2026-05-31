@@ -1,12 +1,14 @@
 import os
+import re
 import uuid
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import wraps
 from typing import Any
 
 import numpy as np
-from flask import Flask, jsonify, render_template, request, session
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 try:
@@ -21,20 +23,70 @@ try:
 except Exception:  # pragma: no cover - 兼容未安装 SB3 的环境
     PPO = None
 
+def _resolve_secret_key() -> str:
+    env_key = os.getenv("FLASK_SECRET_KEY", "").strip()
+    if env_key:
+        return env_key
+    key_path = os.path.join(os.path.dirname(__file__), ".flask_secret_key")
+    try:
+        if os.path.exists(key_path):
+            with open(key_path, "r", encoding="utf-8") as f:
+                persisted = f.read().strip()
+            if persisted:
+                return persisted
+        generated = os.urandom(32).hex()
+        with open(key_path, "w", encoding="utf-8") as f:
+            f.write(generated)
+        return generated
+    except Exception:
+        return os.urandom(32).hex()
+
+
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "drainage-dev-secret-change-me")
+app.secret_key = _resolve_secret_key()
+logger = logging.getLogger("drainage")
 
 
 MODEL_PATH = "models/ppo_drainage.zip"
-SWMM_CSV_PATH = os.getenv("SWMM_CSV_PATH", "").strip()
+
+
+def _resolve_default_swmm_csv() -> str:
+    # 未显式配置 SWMM_CSV_PATH 时，默认切到真实场景 CSV（优先中雨场景）
+    candidates = [
+        "data/processed_rl_core/moderateRain_M1_medium_water_level.csv",
+        "data/processed_rl_core/moderateRain_M0_medium_pre.csv",
+        "data/processed_rl_core/moderateRain_M2_medium_fsn_storage.csv",
+        "data/processed/moderateRain_M1_medium_water_level.csv",
+        "data/processed/moderateRain_M0_medium_pre.csv",
+        "data/processed/moderateRain_M2_medium_fsn_storage.csv",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return ""
+
+
+SWMM_CSV_PATH = os.getenv("SWMM_CSV_PATH", "").strip() or _resolve_default_swmm_csv()
 MONITOR_SESSION_ID = "monitor-dashboard"
 DECISION_STRATEGY_VERSION = "rule-v1.2.0"
 MYSQL_HOST = os.getenv("MYSQL_HOST", "127.0.0.1").strip()
 MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
 MYSQL_USER = os.getenv("MYSQL_USER", "root").strip()
-MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "shn20040511").strip()
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "").strip()
 MYSQL_DB = os.getenv("MYSQL_DB", "drainage").strip()
 MYSQL_CHARSET = os.getenv("MYSQL_CHARSET", "utf8mb4").strip()
+ADMIN_INIT_TOKEN = os.getenv("ADMIN_INIT_TOKEN", "").strip()
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
+ALLOW_PUBLIC_REGISTER = _env_flag("ALLOW_PUBLIC_REGISTER", default=False)
+FLASK_DEBUG = _env_flag("FLASK_DEBUG", default=False)
 
 
 def _db_not_ready() -> tuple[Any, int]:
@@ -63,8 +115,15 @@ def get_db_connection():
             cursorclass=pymysql.cursors.DictCursor,
             autocommit=False,
         )
-    except Exception:
+    except Exception as e:
+        logger.exception("MySQL connection failed: %s", e)
         return None
+
+
+def _err(error: str, message: str, status: int = 500, exc: Exception | None = None):
+    if exc is not None:
+        logger.exception("%s: %s", error, exc)
+    return jsonify({"error": error, "message": message}), status
 
 
 def _normalize_datetime(raw: str | None) -> str | None:
@@ -122,11 +181,17 @@ def _current_user() -> dict[str, Any] | None:
     return {"id": uid, "username": username, "role": role}
 
 
+def _valid_username(username: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_]+", username or ""))
+
+
 def require_login(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
         if _current_user() is None:
-            return jsonify({"error": "unauthorized", "message": "请先登录。"}), 401
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "unauthorized", "message": "请先登录。"}), 401
+            return redirect(url_for("admin_login_page"))
         return fn(*args, **kwargs)
 
     return wrapper
@@ -165,35 +230,22 @@ def init_admin_schema(conn) -> None:
         )
         cur.execute(
             """
-            CREATE TABLE IF NOT EXISTS drainage_records (
+            CREATE TABLE IF NOT EXISTS inventory_data (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                scenario VARCHAR(64) NOT NULL DEFAULT 'default',
-                record_time DATETIME NOT NULL,
-                rain DOUBLE NOT NULL DEFAULT 0,
-                water_node1 DOUBLE NOT NULL DEFAULT 0,
-                water_node2 DOUBLE NOT NULL DEFAULT 0,
-                water_node3 DOUBLE NOT NULL DEFAULT 0,
-                flow_node1 DOUBLE NOT NULL DEFAULT 0,
-                flow_node2 DOUBLE NOT NULL DEFAULT 0,
-                flow_node3 DOUBLE NOT NULL DEFAULT 0,
-                storage_node1 DOUBLE NOT NULL DEFAULT 0,
-                storage_node2 DOUBLE NOT NULL DEFAULT 0,
-                storage_node3 DOUBLE NOT NULL DEFAULT 0,
-                energy DOUBLE NOT NULL DEFAULT 0,
-                overflow DOUBLE NOT NULL DEFAULT 0,
-                reward DOUBLE NOT NULL DEFAULT 0,
-                risk_level ENUM('low','medium','high') NOT NULL DEFAULT 'low',
-                mode VARCHAR(32) NOT NULL DEFAULT 'rule',
-                remark VARCHAR(255) NULL,
-                created_by BIGINT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                INDEX idx_record_time (record_time),
-                INDEX idx_scenario (scenario),
-                INDEX idx_risk_level (risk_level),
-                INDEX idx_mode (mode),
-                CONSTRAINT fk_drainage_created_by FOREIGN KEY (created_by) REFERENCES admin_users(id)
-                    ON DELETE SET NULL ON UPDATE CASCADE
+                time DATETIME NOT NULL,
+                rain DOUBLE DEFAULT NULL,
+                water_1 DOUBLE DEFAULT NULL,
+                water_2 DOUBLE DEFAULT NULL,
+                water_3 DOUBLE DEFAULT NULL,
+                flow_1 DOUBLE DEFAULT NULL,
+                flow_2 DOUBLE DEFAULT NULL,
+                flow_3 DOUBLE DEFAULT NULL,
+                storage_1 DOUBLE DEFAULT NULL,
+                storage_2 DOUBLE DEFAULT NULL,
+                storage_3 DOUBLE DEFAULT NULL,
+                inflow DOUBLE DEFAULT NULL,
+                created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_time (time)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """
         )
@@ -610,6 +662,7 @@ def _parse_record_payload(payload: dict[str, Any], partial: bool = False) -> tup
         "storage_node1": 0.0,
         "storage_node2": 0.0,
         "storage_node3": 0.0,
+        "inflow": 0.0,
         "energy": 0.0,
         "overflow": 0.0,
         "reward": 0.0,
@@ -653,9 +706,196 @@ def _parse_record_payload(payload: dict[str, Any], partial: bool = False) -> tup
     return record, None
 
 
+def _collect_record_filters(query_args, include_mode: bool = True) -> tuple[list[str], list[Any]]:
+    filters: list[str] = []
+    params: list[Any] = []
+
+    scenario = str(query_args.get("scenario", "")).strip()
+    if scenario:
+        filters.append("scenario = %s")
+        params.append(scenario)
+
+    if include_mode:
+        mode = str(query_args.get("mode", "")).strip()
+        if mode:
+            filters.append("mode = %s")
+            params.append(mode)
+
+    risk_level = str(query_args.get("risk_level", "")).strip().lower()
+    if risk_level in {"low", "medium", "high"}:
+        filters.append("risk_level = %s")
+        params.append(risk_level)
+
+    start_time = _normalize_datetime(query_args.get("start_time"))
+    if start_time:
+        filters.append("record_time >= %s")
+        params.append(start_time)
+
+    end_time = _normalize_datetime(query_args.get("end_time"))
+    if end_time:
+        filters.append("record_time <= %s")
+        params.append(end_time)
+
+    min_rain = _safe_float_or_none(query_args.get("min_rain"))
+    if min_rain is not None:
+        filters.append("rain >= %s")
+        params.append(min_rain)
+
+    max_rain = _safe_float_or_none(query_args.get("max_rain"))
+    if max_rain is not None:
+        filters.append("rain <= %s")
+        params.append(max_rain)
+
+    min_overflow = _safe_float_or_none(query_args.get("min_overflow"))
+    if min_overflow is not None:
+        filters.append("overflow >= %s")
+        params.append(min_overflow)
+
+    max_overflow = _safe_float_or_none(query_args.get("max_overflow"))
+    if max_overflow is not None:
+        filters.append("overflow <= %s")
+        params.append(max_overflow)
+
+    keyword = str(query_args.get("keyword", "")).strip()
+    if keyword:
+        filters.append("(scenario LIKE %s OR remark LIKE %s)")
+        like_kw = f"%{keyword}%"
+        params.extend([like_kw, like_kw])
+
+    min_water = _safe_float_or_none(query_args.get("min_water"))
+    if min_water is not None:
+        filters.append("GREATEST(water_node1, water_node2, water_node3) >= %s")
+        params.append(min_water)
+
+    max_water = _safe_float_or_none(query_args.get("max_water"))
+    if max_water is not None:
+        filters.append("GREATEST(water_node1, water_node2, water_node3) <= %s")
+        params.append(max_water)
+
+    return filters, params
+
+
+def _inventory_sql_exprs() -> dict[str, str]:
+    max_water = "GREATEST(COALESCE(water_1, 0), COALESCE(water_2, 0), COALESCE(water_3, 0))"
+    overflow = (
+        "GREATEST(COALESCE(water_1, 0) - 8.0, 0) + "
+        "GREATEST(COALESCE(water_2, 0) - 8.0, 0) + "
+        "GREATEST(COALESCE(water_3, 0) - 8.0, 0)"
+    )
+    risk = (
+        f"CASE WHEN ({overflow}) > 0 OR ({max_water}) >= 8.0 THEN 'high' "
+        f"WHEN ({max_water}) >= 6.0 THEN 'medium' ELSE 'low' END"
+    )
+    avg_water = "(COALESCE(water_1, 0) + COALESCE(water_2, 0) + COALESCE(water_3, 0)) / 3.0"
+    return {
+        "max_water": max_water,
+        "overflow": overflow,
+        "risk": risk,
+        "avg_water": avg_water,
+    }
+
+
+def _collect_inventory_filters(query_args, include_mode: bool = True) -> tuple[list[str], list[Any]]:
+    filters: list[str] = []
+    params: list[Any] = []
+    expr = _inventory_sql_exprs()
+
+    scenario = str(query_args.get("scenario", "")).strip().lower()
+    if scenario and scenario not in {"inventory", "default"}:
+        filters.append("1=0")
+
+    if include_mode:
+        mode = str(query_args.get("mode", "")).strip().lower()
+        if mode and mode != "rule":
+            filters.append("1=0")
+
+    risk_level = str(query_args.get("risk_level", "")).strip().lower()
+    if risk_level in {"low", "medium", "high"}:
+        filters.append(f"({expr['risk']}) = %s")
+        params.append(risk_level)
+
+    start_time = _normalize_datetime(query_args.get("start_time"))
+    if start_time:
+        filters.append("time >= %s")
+        params.append(start_time)
+
+    end_time = _normalize_datetime(query_args.get("end_time"))
+    if end_time:
+        filters.append("time <= %s")
+        params.append(end_time)
+
+    min_rain = _safe_float_or_none(query_args.get("min_rain"))
+    if min_rain is not None:
+        filters.append("COALESCE(rain, 0) >= %s")
+        params.append(min_rain)
+
+    max_rain = _safe_float_or_none(query_args.get("max_rain"))
+    if max_rain is not None:
+        filters.append("COALESCE(rain, 0) <= %s")
+        params.append(max_rain)
+
+    min_inflow = _safe_float_or_none(query_args.get("min_inflow"))
+    if min_inflow is not None:
+        filters.append("COALESCE(inflow, 0) >= %s")
+        params.append(min_inflow)
+
+    max_inflow = _safe_float_or_none(query_args.get("max_inflow"))
+    if max_inflow is not None:
+        filters.append("COALESCE(inflow, 0) <= %s")
+        params.append(max_inflow)
+
+    min_overflow = _safe_float_or_none(query_args.get("min_overflow"))
+    if min_overflow is not None:
+        filters.append(f"({expr['overflow']}) >= %s")
+        params.append(min_overflow)
+
+    max_overflow = _safe_float_or_none(query_args.get("max_overflow"))
+    if max_overflow is not None:
+        filters.append(f"({expr['overflow']}) <= %s")
+        params.append(max_overflow)
+
+    keyword = str(query_args.get("keyword", "")).strip()
+    if keyword:
+        like_kw = f"%{keyword}%"
+        filters.append("(CAST(id AS CHAR) LIKE %s OR DATE_FORMAT(time, '%%Y-%%m-%%d %%H:%%i:%%s') LIKE %s)")
+        params.extend([like_kw, like_kw])
+
+    min_water = _safe_float_or_none(query_args.get("min_water"))
+    if min_water is not None:
+        filters.append(f"({expr['max_water']}) >= %s")
+        params.append(min_water)
+
+    max_water = _safe_float_or_none(query_args.get("max_water"))
+    if max_water is not None:
+        filters.append(f"({expr['max_water']}) <= %s")
+        params.append(max_water)
+
+    return filters, params
+
+
 @app.route("/admin")
+@require_login
 def admin_page():
-    return render_template("admin.html")
+    user = _current_user()
+    return render_template("admin.html", logged_in=bool(user), current_user=user)
+
+
+@app.route("/admin/login")
+def admin_login_page():
+    user = _current_user()
+    if user is not None:
+        return redirect(url_for("home"))
+    return render_template("login.html", allow_public_register=ALLOW_PUBLIC_REGISTER)
+
+
+@app.route("/admin/register")
+def admin_register_page():
+    if not ALLOW_PUBLIC_REGISTER:
+        return redirect(url_for("admin_login_page"))
+    user = _current_user()
+    if user is not None:
+        return redirect(url_for("home"))
+    return render_template("register.html", allow_public_register=ALLOW_PUBLIC_REGISTER)
 
 
 # =========================
@@ -670,6 +910,10 @@ def admin_init():
         return _db_not_ready()
 
     payload = request.get_json(silent=True) or {}
+    if ADMIN_INIT_TOKEN:
+        req_token = str(payload.get("init_token", "")).strip()
+        if req_token != ADMIN_INIT_TOKEN:
+            return jsonify({"error": "forbidden", "message": "初始化令牌无效。"}), 403
     bootstrap_user = str(payload.get("username", os.getenv("ADMIN_BOOTSTRAP_USER", "admin"))).strip() or "admin"
     bootstrap_pass = str(payload.get("password", os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "admin123456"))).strip() or "admin123456"
 
@@ -695,7 +939,7 @@ def admin_init():
         )
     except Exception as e:
         conn.rollback()
-        return jsonify({"error": "init_failed", "message": str(e)}), 500
+        return _err("init_failed", "初始化失败，请检查日志。", 500, e)
     finally:
         conn.close()
 
@@ -728,7 +972,49 @@ def admin_login():
         session["role"] = str(row["role"])
         return jsonify({"ok": True, "user": {"id": row["id"], "username": row["username"], "role": row["role"]}})
     except Exception as e:
-        return jsonify({"error": "login_failed", "message": str(e)}), 500
+        return _err("login_failed", "登录失败，请稍后重试。", 500, e)
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/register", methods=["POST"])
+def admin_register():
+    if not ALLOW_PUBLIC_REGISTER:
+        return jsonify({"error": "forbidden", "message": "当前环境未开放公开注册，请联系管理员创建账号。"}), 403
+    conn = get_db_connection()
+    if conn is None:
+        return _db_not_ready()
+    payload = request.get_json(silent=True) or {}
+    username = str(payload.get("username", "")).strip()
+    password = str(payload.get("password", "")).strip()
+    role = "user"
+
+    if not username or len(username) > 64:
+        return jsonify({"error": "invalid_input", "message": "用户名不能为空且长度不能超过64。"}), 400
+    if not _valid_username(username):
+        return jsonify({"error": "invalid_input", "message": "用户名仅允许字母/数字/下划线。"}), 400
+    if len(password) < 6:
+        return jsonify({"error": "invalid_input", "message": "密码至少 6 位。"}), 400
+
+    try:
+        init_admin_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM admin_users WHERE username=%s LIMIT 1", (username,))
+            if cur.fetchone() is not None:
+                return jsonify({"error": "conflict", "message": "用户名已存在。"}), 409
+            cur.execute(
+                """
+                INSERT INTO admin_users (username, password_hash, role, is_active)
+                VALUES (%s, %s, %s, 1)
+                """,
+                (username, generate_password_hash(password), role),
+            )
+            uid = cur.lastrowid
+        conn.commit()
+        return jsonify({"ok": True, "id": uid, "message": "注册成功，请登录。"})
+    except Exception as e:
+        conn.rollback()
+        return _err("register_failed", "注册失败，请稍后重试。", 500, e)
     finally:
         conn.close()
 
@@ -761,7 +1047,7 @@ def admin_users_list():
             rows = [_jsonify_row(x) for x in cur.fetchall()]
         return jsonify({"items": rows, "total": len(rows)})
     except Exception as e:
-        return jsonify({"error": "query_failed", "message": str(e)}), 500
+        return _err("query_failed", "用户查询失败，请稍后重试。", 500, e)
     finally:
         conn.close()
 
@@ -802,7 +1088,7 @@ def admin_users_create():
         return jsonify({"ok": True, "id": uid})
     except Exception as e:
         conn.rollback()
-        return jsonify({"error": "create_failed", "message": str(e)}), 500
+        return _err("create_failed", "创建用户失败，请稍后重试。", 500, e)
     finally:
         conn.close()
 
@@ -853,7 +1139,7 @@ def admin_users_update(user_id: int):
         return jsonify({"ok": True})
     except Exception as e:
         conn.rollback()
-        return jsonify({"error": "update_failed", "message": str(e)}), 500
+        return _err("update_failed", "更新用户失败，请稍后重试。", 500, e)
     finally:
         conn.close()
 
@@ -877,7 +1163,7 @@ def admin_users_delete(user_id: int):
         return jsonify({"ok": True})
     except Exception as e:
         conn.rollback()
-        return jsonify({"error": "delete_failed", "message": str(e)}), 500
+        return _err("delete_failed", "删除用户失败，请稍后重试。", 500, e)
     finally:
         conn.close()
 
@@ -893,93 +1179,36 @@ def admin_records_list():
     page_size = _safe_int(request.args.get("page_size", 20), default=20, min_v=1, max_v=200)
     offset = (page - 1) * page_size
 
-    filters: list[str] = []
-    params: list[Any] = []
-
-    scenario = str(request.args.get("scenario", "")).strip()
-    if scenario:
-        filters.append("scenario = %s")
-        params.append(scenario)
-
-    mode = str(request.args.get("mode", "")).strip()
-    if mode:
-        filters.append("mode = %s")
-        params.append(mode)
-
-    risk_level = str(request.args.get("risk_level", "")).strip().lower()
-    if risk_level in {"low", "medium", "high"}:
-        filters.append("risk_level = %s")
-        params.append(risk_level)
-
-    start_time = _normalize_datetime(request.args.get("start_time"))
-    if start_time:
-        filters.append("record_time >= %s")
-        params.append(start_time)
-
-    end_time = _normalize_datetime(request.args.get("end_time"))
-    if end_time:
-        filters.append("record_time <= %s")
-        params.append(end_time)
-
-    min_rain = _safe_float_or_none(request.args.get("min_rain"))
-    if min_rain is not None:
-        filters.append("rain >= %s")
-        params.append(min_rain)
-
-    max_rain = _safe_float_or_none(request.args.get("max_rain"))
-    if max_rain is not None:
-        filters.append("rain <= %s")
-        params.append(max_rain)
-
-    min_overflow = _safe_float_or_none(request.args.get("min_overflow"))
-    if min_overflow is not None:
-        filters.append("overflow >= %s")
-        params.append(min_overflow)
-
-    max_overflow = _safe_float_or_none(request.args.get("max_overflow"))
-    if max_overflow is not None:
-        filters.append("overflow <= %s")
-        params.append(max_overflow)
-
-    keyword = str(request.args.get("keyword", "")).strip()
-    if keyword:
-        filters.append("(scenario LIKE %s OR remark LIKE %s)")
-        like_kw = f"%{keyword}%"
-        params.extend([like_kw, like_kw])
-
-    min_water = _safe_float_or_none(request.args.get("min_water"))
-    if min_water is not None:
-        filters.append("GREATEST(water_node1, water_node2, water_node3) >= %s")
-        params.append(min_water)
-
-    max_water = _safe_float_or_none(request.args.get("max_water"))
-    if max_water is not None:
-        filters.append("GREATEST(water_node1, water_node2, water_node3) <= %s")
-        params.append(max_water)
+    filters, params = _collect_inventory_filters(request.args, include_mode=True)
+    expr = _inventory_sql_exprs()
 
     where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
 
     sort_map = {
         "id": "id",
-        "record_time": "record_time",
+        "record_time": "time",
         "rain": "rain",
-        "energy": "energy",
-        "overflow": "overflow",
-        "reward": "reward",
+        "energy": "0",
+        "overflow": expr["overflow"],
+        "reward": "0",
         "created_at": "created_at",
-        "updated_at": "updated_at",
+        "updated_at": "created_at",
     }
     sort_by_key = str(request.args.get("sort_by", "record_time")).strip().lower()
-    sort_by = sort_map.get(sort_by_key, "record_time")
+    sort_by = sort_map.get(sort_by_key, "time")
     sort_order = str(request.args.get("sort_order", "desc")).strip().lower()
     sort_order = "ASC" if sort_order == "asc" else "DESC"
 
-    sql_count = f"SELECT COUNT(1) AS cnt FROM drainage_records {where_sql}"
+    sql_count = f"SELECT COUNT(1) AS cnt FROM inventory_data {where_sql}"
     sql_data = (
-        "SELECT id, scenario, record_time, rain, water_node1, water_node2, water_node3, "
-        "flow_node1, flow_node2, flow_node3, storage_node1, storage_node2, storage_node3, "
-        "energy, overflow, reward, risk_level, mode, remark, created_by, created_at, updated_at "
-        f"FROM drainage_records {where_sql} ORDER BY {sort_by} {sort_order} LIMIT %s OFFSET %s"
+        f"SELECT id, 'inventory' AS scenario, time AS record_time, COALESCE(rain, 0) AS rain, "
+        "COALESCE(water_1, 0) AS water_node1, COALESCE(water_2, 0) AS water_node2, COALESCE(water_3, 0) AS water_node3, "
+        "COALESCE(flow_1, 0) AS flow_node1, COALESCE(flow_2, 0) AS flow_node2, COALESCE(flow_3, 0) AS flow_node3, "
+        "COALESCE(storage_1, 0) AS storage_node1, COALESCE(storage_2, 0) AS storage_node2, COALESCE(storage_3, 0) AS storage_node3, "
+        "COALESCE(inflow, 0) AS inflow, "
+        f"0 AS energy, ({expr['overflow']}) AS overflow, 0 AS reward, ({expr['risk']}) AS risk_level, "
+        "'rule' AS mode, '' AS remark, NULL AS created_by, created_at, created_at AS updated_at "
+        f"FROM inventory_data {where_sql} ORDER BY {sort_by} {sort_order} LIMIT %s OFFSET %s"
     )
 
     try:
@@ -991,7 +1220,7 @@ def admin_records_list():
             rows = [_jsonify_row(x) for x in cur.fetchall()]
         return jsonify({"items": rows, "total": total, "page": page, "page_size": page_size})
     except Exception as e:
-        return jsonify({"error": "query_failed", "message": str(e)}), 500
+        return _err("query_failed", "记录查询失败，请稍后重试。", 500, e)
     finally:
         conn.close()
 
@@ -1002,14 +1231,19 @@ def admin_records_get(record_id: int):
     conn = get_db_connection()
     if conn is None:
         return _db_not_ready()
+    expr = _inventory_sql_exprs()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT id, scenario, record_time, rain, water_node1, water_node2, water_node3,
-                       flow_node1, flow_node2, flow_node3, storage_node1, storage_node2, storage_node3,
-                       energy, overflow, reward, risk_level, mode, remark, created_by, created_at, updated_at
-                FROM drainage_records
+                f"""
+                SELECT id, 'inventory' AS scenario, time AS record_time, COALESCE(rain, 0) AS rain,
+                       COALESCE(water_1, 0) AS water_node1, COALESCE(water_2, 0) AS water_node2, COALESCE(water_3, 0) AS water_node3,
+                       COALESCE(flow_1, 0) AS flow_node1, COALESCE(flow_2, 0) AS flow_node2, COALESCE(flow_3, 0) AS flow_node3,
+                       COALESCE(storage_1, 0) AS storage_node1, COALESCE(storage_2, 0) AS storage_node2, COALESCE(storage_3, 0) AS storage_node3,
+                       COALESCE(inflow, 0) AS inflow,
+                       0 AS energy, ({expr['overflow']}) AS overflow, 0 AS reward, ({expr['risk']}) AS risk_level,
+                       'rule' AS mode, '' AS remark, NULL AS created_by, created_at, created_at AS updated_at
+                FROM inventory_data
                 WHERE id=%s
                 LIMIT 1
                 """,
@@ -1020,7 +1254,7 @@ def admin_records_get(record_id: int):
             return jsonify({"error": "not_found", "message": "记录不存在。"}), 404
         return jsonify({"item": _jsonify_row(row)})
     except Exception as e:
-        return jsonify({"error": "query_failed", "message": str(e)}), 500
+        return _err("query_failed", "记录详情查询失败，请稍后重试。", 500, e)
     finally:
         conn.close()
 
@@ -1036,49 +1270,36 @@ def admin_records_create():
     if err or record is None:
         return jsonify({"error": "invalid_input", "message": err or "数据格式错误。"}), 400
 
-    user = _current_user()
-    created_by = int(user["id"]) if user is not None else None
-
-    fields = [
-        "scenario",
-        "record_time",
-        "rain",
-        "water_node1",
-        "water_node2",
-        "water_node3",
-        "flow_node1",
-        "flow_node2",
-        "flow_node3",
-        "storage_node1",
-        "storage_node2",
-        "storage_node3",
-        "energy",
-        "overflow",
-        "reward",
-        "risk_level",
-        "mode",
-        "remark",
-        "created_by",
-    ]
-    values = []
-    for k in fields[:-1]:
-        if k == "remark":
-            values.append(record.get(k))
-        else:
-            values.append(record.get(k, 0.0 if k not in {"scenario", "record_time", "risk_level", "mode"} else None))
-    values.append(created_by)
-    placeholder = ", ".join(["%s"] * len(fields))
-    sql = f"INSERT INTO drainage_records ({', '.join(fields)}) VALUES ({placeholder})"
+    sql = """
+        INSERT INTO inventory_data (
+            time, rain, water_1, water_2, water_3,
+            flow_1, flow_2, flow_3, storage_1, storage_2, storage_3, inflow
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """
+    values = (
+        record["record_time"],
+        float(record.get("rain", 0.0)),
+        float(record.get("water_node1", 0.0)),
+        float(record.get("water_node2", 0.0)),
+        float(record.get("water_node3", 0.0)),
+        float(record.get("flow_node1", 0.0)),
+        float(record.get("flow_node2", 0.0)),
+        float(record.get("flow_node3", 0.0)),
+        float(record.get("storage_node1", 0.0)),
+        float(record.get("storage_node2", 0.0)),
+        float(record.get("storage_node3", 0.0)),
+        float(record.get("inflow", 0.0)),
+    )
 
     try:
         with conn.cursor() as cur:
-            cur.execute(sql, tuple(values))
+            cur.execute(sql, values)
             rid = cur.lastrowid
         conn.commit()
         return jsonify({"ok": True, "id": rid})
     except Exception as e:
         conn.rollback()
-        return jsonify({"error": "create_failed", "message": str(e)}), 500
+        return _err("create_failed", "新增记录失败，请稍后重试。", 500, e)
     finally:
         conn.close()
 
@@ -1096,38 +1317,34 @@ def admin_records_update(record_id: int):
 
     sets: list[str] = []
     params: list[Any] = []
-    allowed = {
-        "scenario",
-        "record_time",
-        "rain",
-        "water_node1",
-        "water_node2",
-        "water_node3",
-        "flow_node1",
-        "flow_node2",
-        "flow_node3",
-        "storage_node1",
-        "storage_node2",
-        "storage_node3",
-        "energy",
-        "overflow",
-        "reward",
-        "risk_level",
-        "mode",
-        "remark",
+    field_map = {
+        "record_time": "time",
+        "rain": "rain",
+        "water_node1": "water_1",
+        "water_node2": "water_2",
+        "water_node3": "water_3",
+        "flow_node1": "flow_1",
+        "flow_node2": "flow_2",
+        "flow_node3": "flow_3",
+        "storage_node1": "storage_1",
+        "storage_node2": "storage_2",
+        "storage_node3": "storage_3",
     }
-    for key, val in record.items():
-        if key in allowed:
-            sets.append(f"{key}=%s")
-            params.append(val)
+    for key, col in field_map.items():
+        if key in record:
+            sets.append(f"{col}=%s")
+            params.append(record[key])
+    if "inflow" in payload:
+        sets.append("inflow=%s")
+        params.append(_safe_float_or_none(payload.get("inflow")))
     if not sets:
         return jsonify({"error": "invalid_input", "message": "没有可更新字段。"}), 400
     params.append(record_id)
-    sql = f"UPDATE drainage_records SET {', '.join(sets)} WHERE id=%s"
+    sql = f"UPDATE inventory_data SET {', '.join(sets)} WHERE id=%s"
 
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT id FROM drainage_records WHERE id=%s LIMIT 1", (record_id,))
+            cur.execute("SELECT id FROM inventory_data WHERE id=%s LIMIT 1", (record_id,))
             if cur.fetchone() is None:
                 return jsonify({"error": "not_found", "message": "记录不存在。"}), 404
             cur.execute(sql, tuple(params))
@@ -1135,7 +1352,7 @@ def admin_records_update(record_id: int):
         return jsonify({"ok": True})
     except Exception as e:
         conn.rollback()
-        return jsonify({"error": "update_failed", "message": str(e)}), 500
+        return _err("update_failed", "更新记录失败，请稍后重试。", 500, e)
     finally:
         conn.close()
 
@@ -1148,7 +1365,7 @@ def admin_records_delete(record_id: int):
         return _db_not_ready()
     try:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM drainage_records WHERE id=%s", (record_id,))
+            cur.execute("DELETE FROM inventory_data WHERE id=%s", (record_id,))
             affected = cur.rowcount
         conn.commit()
         if affected == 0:
@@ -1156,7 +1373,7 @@ def admin_records_delete(record_id: int):
         return jsonify({"ok": True})
     except Exception as e:
         conn.rollback()
-        return jsonify({"error": "delete_failed", "message": str(e)}), 500
+        return _err("delete_failed", "删除记录失败，请稍后重试。", 500, e)
     finally:
         conn.close()
 
@@ -1167,66 +1384,75 @@ def admin_summary():
     conn = get_db_connection()
     if conn is None:
         return _db_not_ready()
-    scenario = str(request.args.get("scenario", "")).strip()
     group_by = str(request.args.get("group_by", "hour")).strip().lower()
     limit = _safe_int(request.args.get("limit", 72), default=72, min_v=10, max_v=300)
-    start_time = _normalize_datetime(request.args.get("start_time"))
-    end_time = _normalize_datetime(request.args.get("end_time"))
+    expr = _inventory_sql_exprs()
 
-    bucket_expr = "DATE_FORMAT(record_time, '%Y-%m-%d %H:00:00')"
+    bucket_expr = "DATE_FORMAT(time, '%%Y-%%m-%%d %%H:00:00')"
     if group_by == "day":
-        bucket_expr = "DATE_FORMAT(record_time, '%Y-%m-%d 00:00:00')"
+        bucket_expr = "DATE_FORMAT(time, '%%Y-%%m-%%d 00:00:00')"
 
-    filters: list[str] = []
-    params: list[Any] = []
-    if scenario:
-        filters.append("scenario = %s")
-        params.append(scenario)
-    if start_time:
-        filters.append("record_time >= %s")
-        params.append(start_time)
-    if end_time:
-        filters.append("record_time <= %s")
-        params.append(end_time)
+    filters, params = _collect_inventory_filters(request.args, include_mode=True)
+    compare_filters, compare_params = _collect_inventory_filters(request.args, include_mode=False)
     where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+    compare_condition_sql = " AND ".join(compare_filters + ["'rule' IN ('rl', 'rule')"])
+    compare_where_sql = f"WHERE {compare_condition_sql}" if compare_condition_sql else ""
 
     sql_series = f"""
         SELECT {bucket_expr} AS bucket,
                COUNT(1) AS count,
-               AVG(rain) AS avg_rain,
-               AVG((water_node1 + water_node2 + water_node3) / 3.0) AS avg_water,
-               SUM(energy) AS total_energy,
-               SUM(overflow) AS total_overflow,
-               AVG(reward) AS avg_reward
-        FROM drainage_records
+               AVG(COALESCE(rain, 0)) AS avg_rain,
+               AVG({expr["avg_water"]}) AS avg_water,
+               AVG(COALESCE(inflow, 0)) AS avg_inflow,
+               0 AS total_energy,
+               SUM({expr["overflow"]}) AS total_overflow,
+               0 AS avg_reward
+        FROM inventory_data
         {where_sql}
         GROUP BY bucket
         ORDER BY bucket DESC
         LIMIT %s
     """
     sql_risk = f"""
-        SELECT risk_level, COUNT(1) AS count
-        FROM drainage_records
+        SELECT ({expr["risk"]}) AS risk_level, COUNT(1) AS count
+        FROM inventory_data
         {where_sql}
         GROUP BY risk_level
     """
     sql_mode = f"""
-        SELECT mode, COUNT(1) AS count
-        FROM drainage_records
+        SELECT CASE
+                   WHEN COALESCE(inflow, 0) < 10 THEN '0-10'
+                   WHEN COALESCE(inflow, 0) < 30 THEN '10-30'
+                   WHEN COALESCE(inflow, 0) < 60 THEN '30-60'
+                   ELSE '60+'
+               END AS `range`,
+               COUNT(1) AS count
+        FROM inventory_data
         {where_sql}
-        GROUP BY mode
-        ORDER BY count DESC
+        GROUP BY `range`
+        ORDER BY MIN(COALESCE(inflow, 0))
     """
     sql_kpi = f"""
         SELECT COUNT(1) AS total,
-               AVG(rain) AS avg_rain,
-               AVG((water_node1 + water_node2 + water_node3) / 3.0) AS avg_water,
-               MAX(GREATEST(water_node1, water_node2, water_node3)) AS peak_water,
-               SUM(energy) AS total_energy,
-               SUM(overflow) AS total_overflow,
-               AVG(reward) AS avg_reward
-        FROM drainage_records
+               AVG(COALESCE(rain, 0)) AS avg_rain,
+               AVG({expr["avg_water"]}) AS avg_water,
+               AVG(COALESCE(inflow, 0)) AS avg_inflow,
+               MAX({expr["max_water"]}) AS peak_water,
+               0 AS total_energy,
+               SUM({expr["overflow"]}) AS total_overflow,
+               0 AS avg_reward
+        FROM inventory_data
         {where_sql}
+    """
+    sql_rl_vs_rule = f"""
+        SELECT 'rule' AS mode,
+               COUNT(1) AS count,
+               AVG({expr["avg_water"]}) AS avg_water,
+               0 AS total_energy,
+               SUM({expr["overflow"]}) AS total_overflow,
+               0 AS avg_reward
+        FROM inventory_data
+        {compare_where_sql}
     """
 
     try:
@@ -1244,6 +1470,39 @@ def admin_summary():
             cur.execute(sql_kpi, tuple(params))
             kpi = _jsonify_row(cur.fetchone() or {})
 
+            cur.execute(sql_rl_vs_rule, tuple(compare_params))
+            rl_rule_rows = [_jsonify_row(x) for x in cur.fetchall()]
+
+        rl_vs_rule = {
+            "rule": {
+                "count": 0,
+                "avg_water": 0.0,
+                "total_energy": 0.0,
+                "total_overflow": 0.0,
+                "avg_reward": 0.0,
+            },
+            "rl": {
+                "count": 0,
+                "avg_water": 0.0,
+                "total_energy": 0.0,
+                "total_overflow": 0.0,
+                "avg_reward": 0.0,
+            },
+        }
+        for row in rl_rule_rows:
+            mode = str(row.get("mode", "")).strip().lower()
+            if mode not in {"rule", "rl"}:
+                continue
+            rl_vs_rule[mode] = {
+                "count": int(row.get("count") or 0),
+                "avg_water": round(float(row.get("avg_water") or 0.0), 3),
+                "total_energy": round(float(row.get("total_energy") or 0.0), 3),
+                "total_overflow": round(float(row.get("total_overflow") or 0.0), 3),
+                "avg_reward": round(float(row.get("avg_reward") or 0.0), 3),
+            }
+
+        compare_by_mode = str(request.args.get("mode", "")).strip() == ""
+
         return jsonify(
             {
                 "series": rows,
@@ -1253,15 +1512,18 @@ def admin_summary():
                     "total": int(kpi.get("total") or 0),
                     "avg_rain": round(float(kpi.get("avg_rain") or 0.0), 3),
                     "avg_water": round(float(kpi.get("avg_water") or 0.0), 3),
+                    "avg_inflow": round(float(kpi.get("avg_inflow") or 0.0), 3),
                     "peak_water": round(float(kpi.get("peak_water") or 0.0), 3),
                     "total_energy": round(float(kpi.get("total_energy") or 0.0), 3),
                     "total_overflow": round(float(kpi.get("total_overflow") or 0.0), 3),
                     "avg_reward": round(float(kpi.get("avg_reward") or 0.0), 3),
                 },
+                "rl_vs_rule": rl_vs_rule,
+                "rl_vs_rule_enabled": compare_by_mode,
             }
         )
     except Exception as e:
-        return jsonify({"error": "query_failed", "message": str(e)}), 500
+        return _err("query_failed", "统计查询失败，请稍后重试。", 500, e)
     finally:
         conn.close()
 
@@ -1271,30 +1533,32 @@ def admin_summary():
 
 
 # 首页
-@app.route("/")
-def index():
-
+@app.route("/", endpoint="home")
+def home():
+    user = _current_user()
+    if user is None:
+        return redirect(url_for("admin_login_page"))
     return render_template("index.html")
 
 
 # 数据监控页
 @app.route("/charts")
-def charts():
 
+def charts():
     return render_template("charts.html")
 
 
 # 决策解释页
 @app.route("/decision")
-def decision():
 
+def decision():
     return render_template("decision.html")
 
 
 # 动态仿真页
 @app.route("/simulation")
-def simulation():
 
+def simulation():
     return render_template("simulation.html")
 
 
@@ -1304,6 +1568,7 @@ def simulation():
 
 
 @app.route("/api/data")
+
 def get_data():
     steps = int(np.clip(int(request.args.get("steps", 20)), 10, 120))
 
@@ -1389,18 +1654,6 @@ def get_data():
             "rain": rain,
             "water": water,
             "energy": energy,
-            "compare": {
-                "rule": [
-                    float(rule_metrics["total_overflow"]),
-                    float(rule_metrics["total_energy"]),
-                    float(rule_metrics["avg_reward"]),
-                ],
-                "rl": [
-                    float(rl_metrics["total_overflow"]),
-                    float(rl_metrics["total_energy"]),
-                    float(rl_metrics["avg_reward"]),
-                ],
-            },
             "meta": {
                 "session_id": monitor_session.session_id,
                 "mode": monitor_session.mode,
@@ -1633,6 +1886,7 @@ def simulation_api():
 
 
 @app.route("/api/sim/init", methods=["POST"])
+
 def sim_init():
     payload = request.get_json(silent=True) or {}
     mode = str(payload.get("mode", "rule"))
@@ -1659,6 +1913,7 @@ def sim_init():
 
 
 @app.route("/api/sim/step", methods=["POST"])
+
 def sim_step():
     payload = request.get_json(silent=True) or {}
     session_id = payload.get("session_id")
@@ -1673,6 +1928,7 @@ def sim_step():
 
 
 @app.route("/api/sim/reset", methods=["POST"])
+
 def sim_reset():
     payload = request.get_json(silent=True) or {}
     session_id = payload.get("session_id")
@@ -1685,6 +1941,7 @@ def sim_reset():
 
 
 @app.route("/api/sim/history")
+
 def sim_history():
     session_id = request.args.get("session_id", "").strip()
     if not session_id:
@@ -1696,6 +1953,7 @@ def sim_history():
 
 
 @app.route("/api/sim/compare")
+
 def sim_compare():
     steps = int(request.args.get("steps", 120))
     seed = request.args.get("seed")
@@ -1709,4 +1967,4 @@ def sim_compare():
 
 if __name__ == "__main__":
 
-    app.run(debug=True)
+    app.run(debug=FLASK_DEBUG)

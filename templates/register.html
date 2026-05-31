@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>后台注册</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body class="admin-page admin-login-page">
+<div class="admin-aurora admin-aurora-a"></div>
+<div class="admin-aurora admin-aurora-b"></div>
+<header class="admin-header">
+    <div class="admin-head-main">
+        <div class="admin-kicker">DRAINAGE CONTROL HUB</div>
+        <h1>后台注册</h1>
+        <p>创建后台账号后即可前往登录页面进入排水系统管理工作台</p>
+        <div class="admin-head-chips">
+            <span class="head-chip">快速注册</span>
+            <span class="head-chip">密码校验</span>
+            <span class="head-chip">统一风格</span>
+        </div>
+    </div>
+    <div class="admin-header-actions">
+        <button class="admin-btn" onclick="location.href='/admin/login'">去登录</button>
+        <button class="admin-btn ghost" onclick="location.href='/'">返回首页</button>
+    </div>
+</header>
+
+<main class="admin-main">
+    {% if not allow_public_register %}
+    <section class="panel panel-elevated auth-shell">
+        <div class="auth-form-area">
+            <div class="panel-head auth-form-head">
+                <div class="panel-title">注册已关闭</div>
+                <div class="panel-subtitle">当前环境未开放公开注册，请联系管理员创建账号。</div>
+            </div>
+            <div class="inline-actions">
+                <button class="admin-btn" onclick="location.href='/admin/login'">返回登录</button>
+            </div>
+        </div>
+    </section>
+    {% else %}
+    <section id="loginSection" class="panel panel-elevated auth-shell">
+        <aside class="auth-side">
+            <div class="auth-side-kicker">REGISTER GUIDE</div>
+            <h2>专注注册流程</h2>
+            <p>此页面仅用于创建新账号，账号创建成功后请前往登录页输入相同信息完成登录。</p>
+            <ul class="auth-checklist">
+                <li>用户名仅允许字母、数字、下划线</li>
+                <li>密码长度至少 6 位，建议混合大小写和数字</li>
+                <li>确认密码必须与密码保持完全一致</li>
+            </ul>
+            <div class="auth-init-note">
+                <strong>角色说明</strong>
+                <span>通过本页面注册的账号默认角色为 `user`。如需管理员权限，请由管理员在后台用户管理中调整。</span>
+            </div>
+        </aside>
+
+        <div class="auth-form-area">
+            <div class="panel-head auth-form-head">
+                <div class="panel-title">创建账号</div>
+                <div class="panel-subtitle">完整填写以下字段并提交注册</div>
+            </div>
+            <div class="form-grid cols-2 auth-grid">
+                <label>用户名
+                    <input id="loginUsername" type="text" placeholder="例如 drainage_user">
+                </label>
+                <label>密码
+                    <input id="loginPassword" type="password" placeholder="请设置登录密码">
+                </label>
+                <label class="auth-col-span">确认密码
+                    <input id="confirmPassword" type="password" placeholder="请再次输入密码">
+                </label>
+            </div>
+            <div class="auth-meta">
+                <div class="tip" id="passwordStrengthTip">密码强度：-</div>
+                <div class="tip">已有账号可点击“去登录”返回登录页面。</div>
+            </div>
+            <div class="inline-actions">
+                <button id="registerBtn" class="admin-btn secondary">注册账号</button>
+                <button class="admin-btn ghost" onclick="location.href='/admin/login'">去登录</button>
+            </div>
+        </div>
+    </section>
+    {% endif %}
+</main>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/static/js/admin.js"></script>
+</body>
+</html>

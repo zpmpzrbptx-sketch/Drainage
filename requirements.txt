@@ -11,3 +11,6 @@ torch>=2.2.0
 
 # Optional: parse SWMM .out files
 swmm-api>=0.4.60
+
+# Testing
+pytest>=8.0.0
