@@ -1,5 +1,7 @@
 import os
+import json
 from pathlib import Path
+from typing import cast
 import gymnasium as gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
@@ -32,13 +34,19 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 SWMM_CSV_PATH = os.getenv("SWMM_CSV_PATH", "").strip()
 SWMM_CSV_PATHS = os.getenv("SWMM_CSV_PATHS", "").strip()
 SWMM_DATA_DIR = os.getenv("SWMM_DATA_DIR", "").strip()
-TRAIN_MODE = os.getenv("TRAIN_MODE", "multi_all").strip().lower()
+TRAIN_MODE = os.getenv("TRAIN_MODE", "single_m0").strip().lower()
+TRAIN_START_MODE = os.getenv("TRAIN_START_MODE", "").strip().lower()
 # 单文件：
 # export SWMM_CSV_PATH=/path/to/swmm_export.csv
 # 多文件（推荐用于“多个csv同步训练”）：
 # export SWMM_CSV_PATHS=/path/a.csv,/path/b.csv
 # 数据目录（可选）：
 # export SWMM_DATA_DIR=data/processed_rl_core
+# 常用模式：
+# export TRAIN_MODE=single_m0
+# export TRAIN_MODE=multi_all
+# 可选起点模式：
+# export TRAIN_START_MODE=risk_weighted
 
 
 def _resolve_processed_dir() -> Path:
@@ -82,6 +90,36 @@ def resolve_swmm_csv_paths() -> list[str]:
         return [SWMM_CSV_PATH]
 
     # 实验开关：single_s2 / multi_s2 / single_all / multi_all
+    if TRAIN_MODE in {"single_m0", "single_moderate", "single_m0_only"}:
+        m0_paths = _discover_csv("moderaterain_m0")
+        if m0_paths:
+            return [m0_paths[0]]
+
+    if TRAIN_MODE == "multi_m0":
+        m0_paths = _discover_csv("moderaterain_m0")
+        if m0_paths:
+            return m0_paths
+
+    if TRAIN_MODE in {"single_m1", "single_m1_only"}:
+        m1_paths = _discover_csv("moderaterain_m1")
+        if m1_paths:
+            return [m1_paths[0]]
+
+    if TRAIN_MODE == "multi_m1":
+        m1_paths = _discover_csv("moderaterain_m1")
+        if m1_paths:
+            return m1_paths
+
+    if TRAIN_MODE in {"single_m2", "single_m2_only"}:
+        m2_paths = _discover_csv("moderaterain_m2")
+        if m2_paths:
+            return [m2_paths[0]]
+
+    if TRAIN_MODE == "multi_m2":
+        m2_paths = _discover_csv("moderaterain_m2")
+        if m2_paths:
+            return m2_paths
+
     if TRAIN_MODE == "single_s2":
         s2_paths = _discover_csv("s2")
         if s2_paths:
@@ -114,6 +152,16 @@ if TRAIN_SWMM_CSVS:
         print(f"- {p}")
 else:
     print("未检测到 SWMM CSV，回退到 random 模式训练。")
+
+
+class NormalizedObservationWrapper(gym.ObservationWrapper):
+    def __init__(self, env: DrainageEnv):
+        super().__init__(env)
+        self.observation_space = env.get_normalized_observation_space()
+
+    def observation(self, observation):
+        drainage_env = cast(DrainageEnv, self.env)
+        return drainage_env.normalize_observation(observation)
 
 
 def inspect_csv_signal(csv_path: str) -> dict:
@@ -171,11 +219,18 @@ def make_env(rank: int = 0):
         # 每个并行环境都创建独立实例，避免状态互相污染
         csv_path = None
         use_random_env = WEAK_DATASET and (rank % 4 == 0)
+        default_start_mode = "risk_weighted" if TRAIN_MODE in {"single_m2", "single_m2_only", "multi_m2"} else "uniform"
+        start_mode = TRAIN_START_MODE or default_start_mode
         if TRAIN_SWMM_CSVS and not use_random_env:
             # 多环境轮询分配数据源，实现多 CSV 并行“同步训练”
             csv_path = TRAIN_SWMM_CSVS[rank % len(TRAIN_SWMM_CSVS)]
 
-        env = DrainageEnv(swmm_csv_path=csv_path, random_start=True)
+        env = DrainageEnv(
+            swmm_csv_path=csv_path,
+            random_start=True,
+            random_start_mode=start_mode,
+        )
+        env = NormalizedObservationWrapper(env)
         # Monitor 会记录 episode reward/length，便于 SB3 日志统计
         env = Monitor(env)
         # 不同 rank 使用不同 seed，提升采样多样性
@@ -217,10 +272,11 @@ model = PPO(
 # =========================
 # 4. 开始训练
 # =========================
-TOTAL_TIMESTEPS = 200_000
+TOTAL_TIMESTEPS = 1_000_000
 # 复杂控制任务通常需要更长训练步数，5万步常常不够收敛
 
 print("开始训练...")
+print(f"起点采样模式: {TRAIN_START_MODE or ('risk_weighted' if TRAIN_MODE in {'single_m2', 'single_m2_only', 'multi_m2'} else 'uniform')}")
 
 model.learn(total_timesteps=TOTAL_TIMESTEPS, progress_bar=True)
 
@@ -234,7 +290,23 @@ model_path = os.path.join(MODEL_DIR, "ppo_drainage")
 
 model.save(model_path)
 
+meta_path = os.path.join(MODEL_DIR, "ppo_drainage.meta.json")
+with open(meta_path, "w", encoding="utf-8") as f:
+    json.dump(
+        {
+            "obs_normalized": True,
+            "train_mode": TRAIN_MODE,
+            "train_start_mode": TRAIN_START_MODE or ("risk_weighted" if TRAIN_MODE in {"single_m2", "single_m2_only", "multi_m2"} else "uniform"),
+            "total_timesteps": TOTAL_TIMESTEPS,
+            "csv_paths": TRAIN_SWMM_CSVS,
+        },
+        f,
+        ensure_ascii=False,
+        indent=2,
+    )
+
 print(f"模型已保存到: {model_path}")
+print(f"模型元数据已保存到: {meta_path}")
 
 
 # =========================
@@ -258,7 +330,8 @@ for step in range(20):
 
 for step in range(50):
     # deterministic=True 表示评估阶段用“贪心动作”，不加探索噪声
-    action, _states = model.predict(obs, deterministic=True)
+    model_obs = test_env.normalize_observation(obs) if hasattr(test_env, "normalize_observation") else obs
+    action, _states = model.predict(model_obs, deterministic=True)
     obs, reward, done, truncated, info = test_env.step(action)
 
     max_water = float(max(obs[1:4]))

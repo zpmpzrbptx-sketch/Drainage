@@ -1,11 +1,12 @@
 import os
+import json
 import re
 import uuid
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import wraps
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
@@ -48,18 +49,38 @@ logger = logging.getLogger("drainage")
 
 
 MODEL_PATH = "models/ppo_drainage.zip"
+MODEL_META_PATH = "models/ppo_drainage.meta.json"
 
 
 def _resolve_default_swmm_csv() -> str:
     # 未显式配置 SWMM_CSV_PATH 时，默认切到真实场景 CSV（优先中雨场景）
-    candidates = [
-        "data/processed_rl_core/moderateRain_M1_medium_water_level.csv",
-        "data/processed_rl_core/moderateRain_M0_medium_pre.csv",
-        "data/processed_rl_core/moderateRain_M2_medium_fsn_storage.csv",
-        "data/processed/moderateRain_M1_medium_water_level.csv",
-        "data/processed/moderateRain_M0_medium_pre.csv",
-        "data/processed/moderateRain_M2_medium_fsn_storage.csv",
-    ]
+    train_mode = ""
+    if os.path.exists(MODEL_META_PATH):
+        try:
+            with open(MODEL_META_PATH, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            train_mode = str(meta.get("train_mode", "")).strip().lower()
+        except Exception:
+            train_mode = ""
+
+    if train_mode.startswith("single_m0") or train_mode.startswith("multi_m0"):
+        candidates = [
+            "data/processed_rl_core/moderateRain_M0_medium_pre.csv",
+            "data/processed_rl_core/moderateRain_M1_medium_water_level.csv",
+            "data/processed_rl_core/moderateRain_M2_medium_fsn_storage.csv",
+            "data/processed/moderateRain_M0_medium_pre.csv",
+            "data/processed/moderateRain_M1_medium_water_level.csv",
+            "data/processed/moderateRain_M2_medium_fsn_storage.csv",
+        ]
+    else:
+        candidates = [
+            "data/processed_rl_core/moderateRain_M1_medium_water_level.csv",
+            "data/processed_rl_core/moderateRain_M0_medium_pre.csv",
+            "data/processed_rl_core/moderateRain_M2_medium_fsn_storage.csv",
+            "data/processed/moderateRain_M1_medium_water_level.csv",
+            "data/processed/moderateRain_M0_medium_pre.csv",
+            "data/processed/moderateRain_M2_medium_fsn_storage.csv",
+        ]
     for p in candidates:
         if os.path.exists(p):
             return p
@@ -395,7 +416,19 @@ class SimSession:
 class SimulationService:
     def __init__(self) -> None:
         self.sessions: dict[str, SimSession] = {}
+        self.model_metadata = self._load_rl_model_metadata()
+        self.use_normalized_obs = bool(self.model_metadata.get("obs_normalized", False))
         self.rl_model = self._load_rl_model()
+
+    def _load_rl_model_metadata(self) -> dict[str, Any]:
+        if not os.path.exists(MODEL_META_PATH):
+            return {}
+        try:
+            with open(MODEL_META_PATH, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            return meta if isinstance(meta, dict) else {}
+        except Exception:
+            return {}
 
     def _load_rl_model(self):
         if PPO is None:
@@ -438,6 +471,20 @@ class SimulationService:
         pump_mask = getattr(env, "pump_mask", np.ones(action_dim, dtype=np.int32))
         return action_dim, pump_mask
 
+    def _normalize_model_obs(self, session: SimSession) -> np.ndarray | None:
+        if session.obs is None:
+            return None
+        if not self.use_normalized_obs:
+            return session.obs
+        env = session.env
+        if env is not None and hasattr(env, "normalize_observation"):
+            try:
+                drainage_env = cast(DrainageEnv, env)
+                return drainage_env.normalize_observation(session.obs)
+            except Exception:
+                pass
+        return session.obs
+
     def decide_action(self, session: SimSession, manual_action: Any = None) -> tuple[list[int], str]:
         action_dim, pump_mask = self._get_action_spec(session)
         if session.obs is None:
@@ -451,7 +498,10 @@ class SimulationService:
             return action, "manual"
         if session.mode == "rl":
             if self.rl_model is not None:
-                model_action, _ = self.rl_model.predict(session.obs, deterministic=True)
+                model_obs = self._normalize_model_obs(session)
+                if model_obs is None:
+                    return _safe_action([0] * action_dim, action_dim=action_dim, pump_mask=pump_mask), "none"
+                model_action, _ = self.rl_model.predict(model_obs, deterministic=True)
                 return _safe_action(
                     model_action,
                     action_dim=action_dim,

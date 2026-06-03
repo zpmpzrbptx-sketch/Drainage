@@ -8,6 +8,16 @@ import pandas as pd
 from gymnasium import spaces
 
 
+OBSERVATION_RAW_HIGH = np.array(
+    [50.0, 12.0, 12.0, 12.0, 2000.0, 2000.0, 2000.0, 500.0, 500.0, 500.0],
+    dtype=np.float32,
+)
+OBSERVATION_SCALE = np.array(
+    [50.0, 12.0, 12.0, 12.0, 2000.0, 2000.0, 2000.0, 500.0, 500.0, 500.0],
+    dtype=np.float32,
+)
+
+
 class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
     """
     排水系统“厂-站-网”联合调度环境。
@@ -31,6 +41,7 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
         max_steps: int = 200,
         severe_overflow_threshold: float = 12.0,
         random_start: bool = False,
+        random_start_mode: str = "uniform",
         high_water_threshold: float = 5.0,
         medium_water_threshold: float = 3.0,
     ):
@@ -40,13 +51,16 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
         self.action_dim = 3
 
         obs_low = np.array([0.0] * self.state_dim, dtype=np.float32)
-        obs_high = np.array(
-            [50.0, 15.0, 15.0, 15.0, 30.0, 30.0, 30.0, 120.0, 120.0, 120.0],
-            dtype=np.float32,
-        )
-        # 观测上下界：用于训练时归一化/裁剪，避免状态出现异常值
+        self.observation_scale = OBSERVATION_SCALE.copy()
+        self.observation_high = OBSERVATION_RAW_HIGH.copy()
+        # 观测上下界：用于训练/推理时的裁剪，避免状态出现异常值
         self.observation_space = spaces.Box(
-            low=obs_low, high=obs_high, dtype=np.float32
+            low=obs_low, high=self.observation_high, dtype=np.float32
+        )
+        self.normalized_observation_space = spaces.Box(
+            low=np.zeros(self.state_dim, dtype=np.float32),
+            high=np.ones(self.state_dim, dtype=np.float32),
+            dtype=np.float32,
         )
         # 三个泵站分别二值开关，共 2^3=8 种组合动作
         self.action_space = spaces.MultiDiscrete([2, 2, 2])
@@ -54,6 +68,7 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
         self.max_steps = int(max_steps)
         self.severe_overflow_threshold = float(severe_overflow_threshold)
         self.random_start = bool(random_start)
+        self.random_start_mode = str(random_start_mode).strip().lower() or "uniform"
         self.high_water_threshold = float(high_water_threshold)
         self.medium_water_threshold = float(medium_water_threshold)
         self.current_step = 0
@@ -64,7 +79,8 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
         self.medium_water_weight = 0.9
         self.risk_reduction_weight = 2.2
         self.energy_weight = 0.015
-        self.switch_weight = 0.02
+        self.switch_weight = 0.10
+        self.min_hold_steps = 3
         self.idle_risk_penalty = 1.2
         self.low_risk_idle_bonus = 0.0
         self.rain_alert_threshold = 2.0
@@ -77,6 +93,7 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
 
         self.state: Optional[np.ndarray] = None
         self.last_action = np.zeros(self.action_dim, dtype=np.float32)
+        self.last_switch_step = np.full(self.action_dim, -10_000, dtype=np.int32)
         # 与 CSV 中实际泵数量对齐：默认 3 泵全开，读取 SWMM CSV 后会自动更新
         self.active_pump_count = 3
         self.pump_mask = np.ones(self.action_dim, dtype=np.float32)
@@ -86,8 +103,18 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
         self.swmm_series: Optional[Dict[str, Any]] = None
         self.data_len = 0
         self.data_cursor = 0
+        self.start_idx_weights: Optional[np.ndarray] = None
         if swmm_csv_path:
             self.load_swmm_csv(swmm_csv_path)
+
+    def normalize_observation(self, observation: np.ndarray) -> np.ndarray:
+        obs = np.asarray(observation, dtype=np.float32).reshape(-1)
+        if obs.size != self.state_dim:
+            raise ValueError(f"Expected observation size {self.state_dim}, got {obs.size}")
+        return np.clip(obs / self.observation_scale, 0.0, 1.0).astype(np.float32)
+
+    def get_normalized_observation_space(self) -> spaces.Box:
+        return self.normalized_observation_space
 
     def load_swmm_csv(self, csv_path: str) -> None:
         """
@@ -126,6 +153,49 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
 
         self.data_source = "swmm_csv"
         self.data_cursor = 0
+        self._build_start_idx_weights()
+
+    def _build_start_idx_weights(self) -> None:
+        if self.swmm_series is None or self.data_len < 2:
+            self.start_idx_weights = None
+            return
+
+        water_peak = np.max(self.swmm_series["water"], axis=1).astype(np.float32)
+        flow_peak = np.max(self.swmm_series["flow"], axis=1).astype(np.float32)
+        storage_peak = np.max(self.swmm_series["storage"], axis=1).astype(np.float32)
+
+        # 让训练更常从“更难的片段”开始：高水位、高流量、高蓄积都更容易被抽中。
+        score = np.maximum(water_peak - self.medium_water_threshold, 0.0)
+        score += 0.6 * np.maximum(water_peak - self.high_water_threshold, 0.0)
+        score += 0.002 * np.maximum(flow_peak - 40.0, 0.0)
+        score += 0.01 * np.maximum(storage_peak - 80.0, 0.0)
+        score += 0.05
+
+        weights = score[: self.data_len - 1].astype(np.float64)
+        total = float(np.sum(weights))
+        if not np.isfinite(total) or total <= 0.0:
+            self.start_idx_weights = None
+            return
+        self.start_idx_weights = (weights / total).astype(np.float64)
+
+    def _sample_random_start_idx(self) -> int:
+        if self.data_len < 2:
+            return 0
+
+        mode = self.random_start_mode
+        if mode == "risk_weighted" and self.start_idx_weights is not None:
+            candidates = np.arange(self.data_len - 1)
+            return int(self.np_random.choice(candidates, p=self.start_idx_weights))
+
+        if mode == "late":
+            low = max(0, self.data_len // 2)
+            return int(self.np_random.integers(low, self.data_len - 1))
+
+        if mode == "early":
+            high = max(1, self.data_len // 2)
+            return int(self.np_random.integers(0, high))
+
+        return int(self.np_random.integers(0, self.data_len - 1))
 
     def _build_swmm_series(self, df: pd.DataFrame) -> Dict[str, Any]:
         names = list(df.columns)
@@ -301,13 +371,14 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
         # 每个 episode 开始时重置时间和上一时刻动作
         self.current_step = 0
         self.last_action = np.zeros(self.action_dim, dtype=np.float32)
+        self.last_switch_step = np.full(self.action_dim, -10_000, dtype=np.int32)
 
         if self.data_source == "swmm_csv" and self.swmm_series is not None:
             # 支持从任意时间索引启动（便于离线数据训练/评估）
             if "start_idx" in options:
                 start_idx = int(options.get("start_idx", 0))
             elif self.random_start:
-                start_idx = int(self.np_random.integers(0, self.data_len - 1))
+                start_idx = self._sample_random_start_idx()
             else:
                 start_idx = 0
             start_idx = int(np.clip(start_idx, 0, self.data_len - 2))
@@ -354,6 +425,18 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
         action = np.clip(np.rint(action), 0, 1).astype(np.float32)
         if self.data_source == "swmm_csv":
             action = action * self.pump_mask
+
+        # 最短保持步长：泵一旦切换，就至少保持若干步，减少抖动
+        if self.current_step > 1:
+            prev_action = self.last_action.astype(np.int32)
+            current_action = action.astype(np.int32)
+            hold_mask = (
+                (self.current_step - self.last_switch_step) < self.min_hold_steps
+            )
+            forced_mask = np.logical_and(prev_action != current_action, hold_mask)
+            if np.any(forced_mask):
+                action = action.copy()
+                action[forced_mask] = prev_action[forced_mask].astype(np.float32)
 
         prev_state = self.state.copy()
         rain, water_levels, flow, storage = self._transition(prev_state, action)
@@ -413,7 +496,11 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
         reward = float(np.clip(reward, -200.0, 50.0))
 
         self.state = next_state
+        previous_action = self.last_action.copy()
         self.last_action = action.copy()
+        changed = np.asarray(previous_action != self.last_action, dtype=bool)
+        if np.any(changed):
+            self.last_switch_step[changed] = self.current_step
 
         info = {
             "data_source": self.data_source,

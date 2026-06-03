@@ -1,0 +1,9 @@
+{
+  "obs_normalized": true,
+  "train_mode": "multi_m2",
+  "train_start_mode": "risk_weighted",
+  "total_timesteps": 1000000,
+  "csv_paths": [
+    "/Users/nann/Desktop/Drainage/data/processed_rl_core/moderateRain_M2_medium_fsn_storage.csv"
+  ]
+}
