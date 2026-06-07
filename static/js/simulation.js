@@ -20,6 +20,27 @@ function setText(id, value) {
   if (el) el.textContent = value;
 }
 
+function prettyActionSource(source) {
+  const key = String(source || "").toLowerCase();
+  if (key === "rl") return "RL模型";
+  if (key === "rule") return "规则策略";
+  if (key === "rule_fallback") return "规则回退";
+  if (key === "manual") return "手动输入";
+  if (key === "reset") return "重置状态";
+  if (key === "none") return "无动作";
+  return source || "-";
+}
+
+function prettyStrategy(mode, source) {
+  const sourceKey = String(source || "").toLowerCase();
+  const modeKey = String(mode || "").toLowerCase();
+  if (sourceKey === "rl") return "强化学习";
+  if (sourceKey === "rule_fallback") return "强化学习(规则回退)";
+  if (sourceKey === "manual") return "手动模式";
+  if (modeKey === "rule" || sourceKey === "rule") return "规则调度";
+  return mode || source || "-";
+}
+
 function setWater(id, value, maxValue = 10) {
   const el = $(id);
   if (!el) return;
@@ -87,7 +108,10 @@ async function initSession() {
 function renderCurrent(data) {
   setText("rain", data.rain.toFixed ? data.rain.toFixed(2) : data.rain);
   setText("stepNo", data.step ?? 0);
-  setText("strategy", data.action_source || data.mode || state.mode);
+  setText("modelName", data.model_name || "-");
+  setText("sceneName", data.scene_name || "-");
+  setText("strategy", prettyStrategy(data.mode || state.mode, data.action_source));
+  setText("actionSource", prettyActionSource(data.action_source));
   setText("action", `[${(data.action || []).join(", ")}]`);
   setText("risk", data.risk || "-");
   setText("node1", `${(data.water_levels?.[0] ?? 0).toFixed(2)}m`);

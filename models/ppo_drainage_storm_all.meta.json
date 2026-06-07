@@ -1,0 +1,14 @@
+{
+  "model_stem": "ppo_drainage_storm_all",
+  "model_path": "models/ppo_drainage_storm_all.zip",
+  "meta_path": "models/ppo_drainage_storm_all.meta.json",
+  "obs_normalized": true,
+  "train_mode": "single_m0",
+  "train_start_mode": "uniform",
+  "total_timesteps": 1000000,
+  "csv_paths": [
+    "/Users/nann/Desktop/Drainage/data/processed_rl_core/torrentialRain_S0_storm_pre_realistic.csv",
+    "/Users/nann/Desktop/Drainage/data/processed_rl_core/torrentialRain_S1_storm_12h_predrain_plant.csv",
+    "/Users/nann/Desktop/Drainage/data/processed_rl_core/torrentialRain_S2_storm_12h_fsn_storage.csv"
+  ]
+}

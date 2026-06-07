@@ -48,20 +48,54 @@ app.secret_key = _resolve_secret_key()
 logger = logging.getLogger("drainage")
 
 
-MODEL_PATH = "models/ppo_drainage.zip"
-MODEL_META_PATH = "models/ppo_drainage.meta.json"
+def _slugify_name(text: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in text.strip().lower())
+    cleaned = "_".join(part for part in cleaned.split("_") if part)
+    return cleaned or "default"
+
+
+def _resolve_model_paths() -> tuple[str, str]:
+    configured_model_path = os.getenv("MODEL_PATH", "").strip()
+    configured_meta_path = os.getenv("MODEL_META_PATH", "").strip()
+    if configured_model_path or configured_meta_path:
+        return (
+            configured_model_path or "models/ppo_drainage.zip",
+            configured_meta_path or "models/ppo_drainage.meta.json",
+        )
+
+    train_mode = os.getenv("TRAIN_MODE", "").strip().lower()
+    if train_mode:
+        stem = f"ppo_drainage_{_slugify_name(train_mode)}"
+        model_path = f"models/{stem}.zip"
+        meta_path = f"models/{stem}.meta.json"
+        if os.path.exists(model_path) or os.path.exists(meta_path):
+            return model_path, meta_path
+
+    return "models/ppo_drainage.zip", "models/ppo_drainage.meta.json"
+
+
+MODEL_PATH, MODEL_META_PATH = _resolve_model_paths()
 
 
 def _resolve_default_swmm_csv() -> str:
     # 未显式配置 SWMM_CSV_PATH 时，默认切到真实场景 CSV（优先中雨场景）
     train_mode = ""
+    csv_paths: list[str] = []
     if os.path.exists(MODEL_META_PATH):
         try:
             with open(MODEL_META_PATH, "r", encoding="utf-8") as f:
                 meta = json.load(f)
             train_mode = str(meta.get("train_mode", "")).strip().lower()
+            csv_paths = [
+                value for value in meta.get("csv_paths", []) if isinstance(value, str)
+            ]
         except Exception:
             train_mode = ""
+            csv_paths = []
+
+    for value in csv_paths:
+        if os.path.exists(value):
+            return value
 
     if train_mode.startswith("single_m0") or train_mode.startswith("multi_m0"):
         candidates = [
@@ -420,6 +454,34 @@ class SimulationService:
         self.use_normalized_obs = bool(self.model_metadata.get("obs_normalized", False))
         self.rl_model = self._load_rl_model()
 
+    def _model_display_name(self) -> str:
+        name = str(self.model_metadata.get("model_stem", "")).strip()
+        if name:
+            return name
+        return os.path.splitext(os.path.basename(MODEL_PATH))[0] or "未加载模型"
+
+    def _scene_display_name(self, session: SimSession | None = None) -> str:
+        csv_path = SWMM_CSV_PATH
+        if session is not None and session.env is not None:
+            csv_path = str(getattr(session.env, "source_csv_path", "") or csv_path)
+        if not csv_path:
+            return "random"
+        return os.path.splitext(os.path.basename(csv_path))[0]
+
+    def _runtime_meta(self, session: SimSession | None = None) -> dict[str, Any]:
+        csv_path = SWMM_CSV_PATH
+        data_source = "random"
+        if session is not None and session.env is not None:
+            csv_path = str(getattr(session.env, "source_csv_path", "") or csv_path)
+            data_source = str(getattr(session.env, "data_source", data_source))
+        return {
+            "model_name": self._model_display_name(),
+            "model_path": MODEL_PATH,
+            "scene_name": self._scene_display_name(session),
+            "scene_path": csv_path,
+            "data_source": data_source,
+        }
+
     def _load_rl_model_metadata(self) -> dict[str, Any]:
         if not os.path.exists(MODEL_META_PATH):
             return {}
@@ -584,6 +646,7 @@ class SimulationService:
                 .tolist(),
             ),
         }
+        snapshot.update(self._runtime_meta(session))
         snapshot["explain"] = self.explain(snapshot)
         session.history.append(snapshot)
         return snapshot
@@ -602,7 +665,7 @@ class SimulationService:
         storage_levels = [float(x) for x in session.obs[7:10]]
         overflow = float(np.sum(np.maximum(np.asarray(water_levels) - 8.0, 0.0)))
         max_water = float(max(water_levels))
-        return {
+        payload = {
             "session_id": session.session_id,
             "mode": session.mode,
             "step": 0,
@@ -621,6 +684,8 @@ class SimulationService:
             "pump_mask": np.asarray(pump_mask).astype(np.int32).tolist(),
             "explain": "系统已重置，等待下一步调度。",
         }
+        payload.update(self._runtime_meta(session))
+        return payload
 
     def history(self, session: SimSession) -> dict[str, Any]:
         return {
@@ -1958,6 +2023,7 @@ def sim_init():
             "seed": session.seed,
             "done": session.done,
             "step": session.step_count,
+            **sim_service._runtime_meta(session),
         }
     )
 

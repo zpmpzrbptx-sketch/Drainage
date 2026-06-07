@@ -1,0 +1,14 @@
+{
+  "model_stem": "ppo_drainage_moderate_all",
+  "model_path": "models/ppo_drainage_moderate_all.zip",
+  "meta_path": "models/ppo_drainage_moderate_all.meta.json",
+  "obs_normalized": true,
+  "train_mode": "single_m0",
+  "train_start_mode": "uniform",
+  "total_timesteps": 1000000,
+  "csv_paths": [
+    "/Users/nann/Desktop/Drainage/data/processed_rl_core/moderateRain_M0_medium_pre.csv",
+    "/Users/nann/Desktop/Drainage/data/processed_rl_core/moderateRain_M1_medium_water_level.csv",
+    "/Users/nann/Desktop/Drainage/data/processed_rl_core/moderateRain_M2_medium_fsn_storage.csv"
+  ]
+}

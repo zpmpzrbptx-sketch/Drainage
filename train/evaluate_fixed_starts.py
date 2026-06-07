@@ -20,35 +20,99 @@ except Exception:  # pragma: no cover
     PPO = None
 
 
-MODEL_PATH = ROOT_DIR / "models" / "ppo_drainage.zip"
-MODEL_META_PATH = ROOT_DIR / "models" / "ppo_drainage.meta.json"
+DEFAULT_MODEL_STEM = "ppo_drainage"
 
 
-def _load_model_meta() -> dict[str, Any]:
-    if not MODEL_META_PATH.exists():
+def _slugify_name(text: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in text.strip().lower())
+    cleaned = "_".join(part for part in cleaned.split("_") if part)
+    return cleaned or "default"
+
+
+def _resolve_default_model_stem() -> str:
+    configured = os.getenv("EVAL_MODEL_BASENAME", "").strip()
+    if configured:
+        return _slugify_name(configured)
+
+    train_mode = (
+        os.getenv("EVAL_TRAIN_MODE", "").strip().lower()
+        or os.getenv("TRAIN_MODE", "").strip().lower()
+    )
+    if train_mode:
+        return f"ppo_drainage_{_slugify_name(train_mode)}"
+    return DEFAULT_MODEL_STEM
+
+
+def _resolve_default_model_paths() -> tuple[Path, Path]:
+    stem = _resolve_default_model_stem()
+    return (
+        ROOT_DIR / "models" / f"{stem}.zip",
+        ROOT_DIR / "models" / f"{stem}.meta.json",
+    )
+
+
+def _load_model_meta(meta_path: Path) -> dict[str, Any]:
+    if not meta_path.exists():
         return {}
     try:
-        with MODEL_META_PATH.open("r", encoding="utf-8") as f:
+        with meta_path.open("r", encoding="utf-8") as f:
             meta = json.load(f)
         return meta if isinstance(meta, dict) else {}
     except Exception:
         return {}
 
 
-def _resolve_default_csv() -> str | None:
-    meta = _load_model_meta()
+def _resolve_default_csv(meta_path: Path) -> str | None:
+    meta = _load_model_meta(meta_path)
     train_mode = str(meta.get("train_mode", "")).strip().lower()
+    csv_paths = meta.get("csv_paths", [])
     candidates: list[str]
+
+    if isinstance(csv_paths, list):
+        for value in csv_paths:
+            if isinstance(value, str):
+                path = Path(value)
+                if path.exists():
+                    return str(path)
 
     if train_mode.startswith("single_m0") or train_mode.startswith("multi_m0"):
         candidates = [
             "data/processed_rl_core/moderateRain_M0_medium_pre.csv",
             "data/processed/moderateRain_M0_medium_pre.csv",
         ]
+    elif train_mode.startswith("single_m1") or train_mode.startswith("multi_m1"):
+        candidates = [
+            "data/processed_rl_core/moderateRain_M1_medium_water_level.csv",
+            "data/processed/moderateRain_M1_medium_water_level.csv",
+        ]
     elif train_mode.startswith("single_m2") or train_mode.startswith("multi_m2"):
         candidates = [
             "data/processed_rl_core/moderateRain_M2_medium_fsn_storage.csv",
             "data/processed/moderateRain_M2_medium_fsn_storage.csv",
+        ]
+    elif train_mode.startswith("single_s0") or train_mode.startswith("multi_s0"):
+        candidates = [
+            "data/processed_rl_core/torrentialRain_S0_storm_pre_realistic.csv",
+            "data/processed/torrentialRain_S0_storm_pre_realistic.csv",
+        ]
+    elif train_mode.startswith("single_s1") or train_mode.startswith("multi_s1"):
+        candidates = [
+            "data/processed_rl_core/torrentialRain_S1_storm_12h_predrain_plant.csv",
+            "data/processed/torrentialRain_S1_storm_12h_predrain_plant.csv",
+        ]
+    elif (
+        train_mode.startswith("single_s2")
+        or train_mode.startswith("multi_s2")
+        or train_mode.startswith("single_s")
+        or train_mode.startswith("multi_s")
+        or "storm" in train_mode
+        or "torrential" in train_mode
+    ):
+        candidates = [
+            "data/processed_rl_core/torrentialRain_S2_storm_12h_fsn_storage.csv",
+            "data/processed/torrentialRain_S2_storm_12h_fsn_storage.csv",
+            "data/processed_rl_core/torrentialRain_S1_storm_12h_predrain_plant.csv",
+            "data/processed_rl_core/torrentialRain_S0_storm_pre_realistic.csv",
         ]
     else:
         candidates = [
@@ -157,10 +221,21 @@ def run_episode(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Evaluate fixed-start drainage scenarios")
+    default_model_path, default_meta_path = _resolve_default_model_paths()
+    parser.add_argument(
+        "--model-path",
+        default=os.getenv("EVAL_MODEL_PATH", "").strip() or str(default_model_path),
+        help="PPO model .zip path. Defaults to TRAIN_MODE-matched saved model.",
+    )
+    parser.add_argument(
+        "--meta-path",
+        default=os.getenv("EVAL_META_PATH", "").strip() or str(default_meta_path),
+        help="Model metadata .json path. Defaults to TRAIN_MODE-matched saved metadata.",
+    )
     parser.add_argument(
         "--csv-path",
         default=os.getenv("EVAL_CSV_PATH", "").strip(),
-        help="Evaluation CSV path. Defaults to model-matched moderate-rain CSV.",
+        help="Evaluation CSV path. Defaults to model-matched CSV from metadata.",
     )
     parser.add_argument(
         "--starts",
@@ -185,7 +260,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    csv_path = args.csv_path or _resolve_default_csv()
+    model_path = Path(args.model_path)
+    meta_path = Path(args.meta_path)
+    csv_path = args.csv_path or _resolve_default_csv(meta_path)
     if csv_path is None:
         print("未找到可用于评估的 CSV。请手动传 --csv-path。")
         return 1
@@ -193,7 +270,7 @@ def main() -> int:
     starts = _parse_int_list(args.starts)
     policies = [p.strip().lower() for p in args.policies.split(",") if p.strip()]
 
-    meta = _load_model_meta()
+    meta = _load_model_meta(meta_path)
     use_normalized_obs = bool(meta.get("obs_normalized", False))
 
     model = None
@@ -201,11 +278,13 @@ def main() -> int:
         if PPO is None:
             print("stable-baselines3 不可用，无法评估 PPO。")
             return 1
-        if not MODEL_PATH.exists():
-            print(f"未找到模型文件: {MODEL_PATH}")
+        if not model_path.exists():
+            print(f"未找到模型文件: {model_path}")
             return 1
-        model = PPO.load(str(MODEL_PATH))
+        model = PPO.load(str(model_path))
 
+    print(f"评估模型: {model_path}")
+    print(f"模型元数据: {meta_path}")
     print(f"评估 CSV: {csv_path}")
     print(f"起点: {starts}")
     print(f"策略: {policies}")

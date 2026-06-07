@@ -1,0 +1,20 @@
+{
+  "model_stem": "ppo_drainage_all_weather",
+  "model_path": "models/ppo_drainage_all_weather.zip",
+  "meta_path": "models/ppo_drainage_all_weather.meta.json",
+  "obs_normalized": true,
+  "train_mode": "single_m0",
+  "train_start_mode": "uniform",
+  "total_timesteps": 1000000,
+  "csv_paths": [
+    "/Users/nann/Desktop/Drainage/data/processed_rl_core/arid_D0_dry_pre.csv",
+    "/Users/nann/Desktop/Drainage/data/processed_rl_core/arid_D1_dry_station_network.csv",
+    "/Users/nann/Desktop/Drainage/data/processed_rl_core/arid_D2_dry_fsn_flush.csv",
+    "/Users/nann/Desktop/Drainage/data/processed_rl_core/moderateRain_M0_medium_pre.csv",
+    "/Users/nann/Desktop/Drainage/data/processed_rl_core/moderateRain_M1_medium_water_level.csv",
+    "/Users/nann/Desktop/Drainage/data/processed_rl_core/moderateRain_M2_medium_fsn_storage.csv",
+    "/Users/nann/Desktop/Drainage/data/processed_rl_core/torrentialRain_S0_storm_pre_realistic.csv",
+    "/Users/nann/Desktop/Drainage/data/processed_rl_core/torrentialRain_S1_storm_12h_predrain_plant.csv",
+    "/Users/nann/Desktop/Drainage/data/processed_rl_core/torrentialRain_S2_storm_12h_fsn_storage.csv"
+  ]
+}

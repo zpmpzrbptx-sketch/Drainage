@@ -1,5 +1,6 @@
 import os
 import json
+import importlib.util
 from pathlib import Path
 from typing import cast
 import gymnasium as gym
@@ -36,6 +37,7 @@ SWMM_CSV_PATHS = os.getenv("SWMM_CSV_PATHS", "").strip()
 SWMM_DATA_DIR = os.getenv("SWMM_DATA_DIR", "").strip()
 TRAIN_MODE = os.getenv("TRAIN_MODE", "single_m0").strip().lower()
 TRAIN_START_MODE = os.getenv("TRAIN_START_MODE", "").strip().lower()
+MODEL_BASENAME = os.getenv("MODEL_BASENAME", "").strip()
 # 单文件：
 # export SWMM_CSV_PATH=/path/to/swmm_export.csv
 # 多文件（推荐用于“多个csv同步训练”）：
@@ -44,7 +46,12 @@ TRAIN_START_MODE = os.getenv("TRAIN_START_MODE", "").strip().lower()
 # export SWMM_DATA_DIR=data/processed_rl_core
 # 常用模式：
 # export TRAIN_MODE=single_m0
+# export TRAIN_MODE=single_s0
+# export TRAIN_MODE=single_s1
+# export TRAIN_MODE=single_s2
+# export TRAIN_MODE=multi_storm
 # export TRAIN_MODE=multi_all
+# export MODEL_BASENAME=ppo_drainage_custom
 # 可选起点模式：
 # export TRAIN_START_MODE=risk_weighted
 
@@ -67,6 +74,18 @@ def _resolve_processed_dir() -> Path:
     return candidates[0]
 
 
+def _slugify_name(text: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in text.strip().lower())
+    cleaned = "_".join(part for part in cleaned.split("_") if part)
+    return cleaned or "default"
+
+
+def resolve_model_stem() -> str:
+    if MODEL_BASENAME:
+        return _slugify_name(MODEL_BASENAME)
+    return f"ppo_drainage_{_slugify_name(TRAIN_MODE)}"
+
+
 def resolve_swmm_csv_paths() -> list[str]:
     processed_dir = _resolve_processed_dir()
 
@@ -79,6 +98,13 @@ def resolve_swmm_csv_paths() -> list[str]:
         key = keyword.lower()
         return [str(p) for p in files if key in p.stem.lower()]
 
+    def _discover_any(keywords: list[str]) -> list[str]:
+        for keyword in keywords:
+            paths = _discover_csv(keyword)
+            if paths:
+                return paths
+        return []
+
     # 优先使用显式列表变量
     if SWMM_CSV_PATHS:
         paths = [p.strip() for p in SWMM_CSV_PATHS.split(",") if p.strip()]
@@ -89,7 +115,7 @@ def resolve_swmm_csv_paths() -> list[str]:
     if SWMM_CSV_PATH:
         return [SWMM_CSV_PATH]
 
-    # 实验开关：single_s2 / multi_s2 / single_all / multi_all
+    # 实验开关：single_m0 / single_s0 / multi_storm / multi_all
     if TRAIN_MODE in {"single_m0", "single_moderate", "single_m0_only"}:
         m0_paths = _discover_csv("moderaterain_m0")
         if m0_paths:
@@ -120,15 +146,49 @@ def resolve_swmm_csv_paths() -> list[str]:
         if m2_paths:
             return m2_paths
 
-    if TRAIN_MODE == "single_s2":
-        s2_paths = _discover_csv("s2")
+    if TRAIN_MODE in {"single_s0", "single_s0_only"}:
+        s0_paths = _discover_any(["torrentialrain_s0", "storm_s0", "s0"])
+        if s0_paths:
+            return [s0_paths[0]]
+
+    if TRAIN_MODE == "multi_s0":
+        s0_paths = _discover_any(["torrentialrain_s0", "storm_s0", "s0"])
+        if s0_paths:
+            return s0_paths
+
+    if TRAIN_MODE in {"single_s1", "single_s1_only"}:
+        s1_paths = _discover_any(["torrentialrain_s1", "storm_s1", "s1"])
+        if s1_paths:
+            return [s1_paths[0]]
+
+    if TRAIN_MODE == "multi_s1":
+        s1_paths = _discover_any(["torrentialrain_s1", "storm_s1", "s1"])
+        if s1_paths:
+            return s1_paths
+
+    if TRAIN_MODE in {"single_s2", "single_s2_only"}:
+        s2_paths = _discover_any(["torrentialrain_s2", "storm_s2", "s2"])
         if s2_paths:
             return [s2_paths[0]]
 
     if TRAIN_MODE == "multi_s2":
-        s2_paths = _discover_csv("s2")
+        s2_paths = _discover_any(["torrentialrain_s2", "storm_s2", "s2"])
         if s2_paths:
             return s2_paths
+
+    if TRAIN_MODE in {"single_s", "single_storm"}:
+        s2_paths = _discover_csv("s2")
+        if s2_paths:
+            return [s2_paths[0]]
+
+    if TRAIN_MODE in {"multi_s", "multi_storm", "multi_torrential"}:
+        storm_paths = []
+        for p in _discover_csv():
+            stem = Path(p).stem.lower()
+            if "torrentialrain_" in stem or "_storm_" in stem:
+                storm_paths.append(p)
+        if storm_paths:
+            return storm_paths
 
     if TRAIN_MODE in {"single_all", "single"}:
         all_paths = _discover_csv()
@@ -144,6 +204,14 @@ def resolve_swmm_csv_paths() -> list[str]:
 
 
 TRAIN_SWMM_CSVS = resolve_swmm_csv_paths()
+MODEL_STEM = resolve_model_stem()
+MODEL_SAVE_PATH = os.path.join(MODEL_DIR, MODEL_STEM)
+MODEL_ZIP_PATH = f"{MODEL_SAVE_PATH}.zip"
+MODEL_META_SAVE_PATH = os.path.join(MODEL_DIR, f"{MODEL_STEM}.meta.json")
+HAS_TENSORBOARD = importlib.util.find_spec("tensorboard") is not None
+HAS_TQDM = importlib.util.find_spec("tqdm") is not None
+HAS_RICH = importlib.util.find_spec("rich") is not None
+HAS_PROGRESS_BAR = HAS_TQDM and HAS_RICH
 print(f"数据目录: {_resolve_processed_dir()}")
 if TRAIN_SWMM_CSVS:
     print(f"训练模式: {TRAIN_MODE}")
@@ -152,6 +220,11 @@ if TRAIN_SWMM_CSVS:
         print(f"- {p}")
 else:
     print("未检测到 SWMM CSV，回退到 random 模式训练。")
+print(f"模型保存标识: {MODEL_STEM}")
+if not HAS_TENSORBOARD:
+    print("[提示] 未检测到 tensorboard，训练将继续，但不写入 TensorBoard 日志。")
+if not HAS_PROGRESS_BAR:
+    print("[提示] 未检测到 tqdm 或 rich，训练将继续，但不显示进度条。")
 
 
 class NormalizedObservationWrapper(gym.ObservationWrapper):
@@ -252,7 +325,7 @@ model = PPO(
     policy="MlpPolicy",
     env=env,
     verbose=1,
-    tensorboard_log=LOG_DIR,
+    tensorboard_log=LOG_DIR if HAS_TENSORBOARD else None,
     # 这组参数偏“稳定优先”：
     # - learning_rate 降低，减少策略震荡
     # - n_steps * N_ENVS = 4096，每轮 rollout 数据量更充足
@@ -278,7 +351,7 @@ TOTAL_TIMESTEPS = 1_000_000
 print("开始训练...")
 print(f"起点采样模式: {TRAIN_START_MODE or ('risk_weighted' if TRAIN_MODE in {'single_m2', 'single_m2_only', 'multi_m2'} else 'uniform')}")
 
-model.learn(total_timesteps=TOTAL_TIMESTEPS, progress_bar=True)
+model.learn(total_timesteps=TOTAL_TIMESTEPS, progress_bar=HAS_PROGRESS_BAR)
 
 print("训练完成！")
 
@@ -286,14 +359,14 @@ print("训练完成！")
 # =========================
 # 5. 保存模型
 # =========================
-model_path = os.path.join(MODEL_DIR, "ppo_drainage")
+model.save(MODEL_SAVE_PATH)
 
-model.save(model_path)
-
-meta_path = os.path.join(MODEL_DIR, "ppo_drainage.meta.json")
-with open(meta_path, "w", encoding="utf-8") as f:
+with open(MODEL_META_SAVE_PATH, "w", encoding="utf-8") as f:
     json.dump(
         {
+            "model_stem": MODEL_STEM,
+            "model_path": MODEL_ZIP_PATH,
+            "meta_path": MODEL_META_SAVE_PATH,
             "obs_normalized": True,
             "train_mode": TRAIN_MODE,
             "train_start_mode": TRAIN_START_MODE or ("risk_weighted" if TRAIN_MODE in {"single_m2", "single_m2_only", "multi_m2"} else "uniform"),
@@ -305,8 +378,8 @@ with open(meta_path, "w", encoding="utf-8") as f:
         indent=2,
     )
 
-print(f"模型已保存到: {model_path}")
-print(f"模型元数据已保存到: {meta_path}")
+print(f"模型已保存到: {MODEL_ZIP_PATH}")
+print(f"模型元数据已保存到: {MODEL_META_SAVE_PATH}")
 
 
 # =========================

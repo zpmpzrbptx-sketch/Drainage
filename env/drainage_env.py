@@ -104,6 +104,7 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
         self.data_len = 0
         self.data_cursor = 0
         self.start_idx_weights: Optional[np.ndarray] = None
+        self.source_csv_path: str = ""
         if swmm_csv_path:
             self.load_swmm_csv(swmm_csv_path)
 
@@ -127,6 +128,7 @@ class DrainageEnv(gym.Env[np.ndarray, np.ndarray]):
         if not path.exists():
             raise FileNotFoundError(f"SWMM csv not found: {csv_path}")
 
+        self.source_csv_path = str(path.resolve())
         df = pd.read_csv(path)
         if df.empty:
             raise ValueError(f"SWMM csv is empty: {csv_path}")
